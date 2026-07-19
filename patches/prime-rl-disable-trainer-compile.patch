@@ -1,0 +1,9 @@
+diff --git a/packages/prime-rl-configs/src/prime_rl/configs/trainer.py b/packages/prime-rl-configs/src/prime_rl/configs/trainer.py
+index 73e1051a8..906ef0a50 100644
+--- a/packages/prime-rl-configs/src/prime_rl/configs/trainer.py
++++ b/packages/prime-rl-configs/src/prime_rl/configs/trainer.py
+@@ -156,8 +156,8 @@ class ModelConfig(BaseModelConfig):
+-    compile: CompileConfig | None = CompileConfig()
+-    """Compile the model with ``torch.compile``."""
++    compile: CompileConfig | None = None
++    """Compile the model with ``torch.compile`` when explicitly configured."""

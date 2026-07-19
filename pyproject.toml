@@ -1,0 +1,43 @@
+[project]
+name = "nowak-coordination"
+version = "0.1.0"
+description = "Evolutionary-pressure cooperation RL experiments"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "matplotlib>=3.9",
+    "nashpy>=0.0.41",
+    "numpy>=2.0",
+    "open-spiel>=1.5",
+    "pandas>=2.2",
+    "scipy>=1.14",
+    "verifiers>=0.1.8",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.9",
+]
+gpu = [
+    "accelerate>=1.10",
+    "peft>=0.17",
+    "safetensors>=0.5",
+    "torch>=2.7",
+    "transformers>=4.57.1",
+    "vllm>=0.11.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nowak_coordination", "src/donor_coord_v1"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

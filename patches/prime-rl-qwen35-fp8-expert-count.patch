@@ -1,0 +1,17 @@
+diff --git a/src/prime_rl/trainer/models/qwen3_5_moe/converting_qwen3_5_moe.py b/src/prime_rl/trainer/models/qwen3_5_moe/converting_qwen3_5_moe.py
+--- a/src/prime_rl/trainer/models/qwen3_5_moe/converting_qwen3_5_moe.py
++++ b/src/prime_rl/trainer/models/qwen3_5_moe/converting_qwen3_5_moe.py
+@@ -34,7 +34,13 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
+         w2 = down_proj  # down
+     else:
+         # Old per-expert format
+-        num_experts = len([k for k in state_dict.keys() if f"model.layers.{i}.mlp.experts" in k and "gate_proj" in k])
++        # FP8 checkpoints also carry ``gate_proj.weight_scale_inv`` for each
++        # routed expert.  Count only the actual projection weights; otherwise
++        # the scale tensors double the inferred expert count (256 -> 512).
++        num_experts = sum(
++            k.startswith(f"model.layers.{i}.mlp.experts.") and k.endswith(".gate_proj.weight")
++            for k in state_dict
++        )
+         if num_experts == 0:
+             return

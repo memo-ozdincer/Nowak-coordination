@@ -1,0 +1,41 @@
+model = "qwen-nowak"
+num_rollouts = 1
+max_concurrent = 48
+max_turns = 3
+max_input_tokens = 4096
+max_output_tokens = 192
+rich = false
+push = false
+output_dir = "results/base_grid"
+
+[taskset]
+id = "donor-coord-v1"
+seed = 1000
+c = 1.0
+b_values = [2.0, 8.0]
+w_values = [0.1, 0.9]
+q_values = [0.1, 0.9]
+partner_policies = ["always_cooperate", "always_defect", "tit_for_tat"]
+episodes_per_cell = 2
+horizon_min = 3
+horizon_max = 3
+
+[taskset.task]
+model = "A"
+
+[harness]
+id = "null"
+
+[harness.runtime]
+type = "subprocess"
+
+[client]
+type = "eval"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_var = "VLLM_API_KEY"
+
+[sampling]
+temperature = 0.0
+top_p = 1.0
+max_tokens = 64
+chat_template_kwargs = { enable_thinking = false }

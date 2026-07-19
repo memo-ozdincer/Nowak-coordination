@@ -1,0 +1,95 @@
+# Ten-update feasibility pilot for Model A (payoff-only), not a final training run.
+max_steps = 10
+seq_len = 4096
+output_dir = "/scratch/memoozd/rl/Nowak-coordination/results/model_a_pilot"
+
+[deployment]
+gpus_per_node = 4
+num_train_gpus = 2
+num_infer_gpus = 2
+
+[model]
+name = "/home/memoozd/scratch/models/Qwen3.6-35B-A3B-FP8"
+
+[wandb]
+project = "nowak-coordination"
+name = "model-a-10-step-pilot"
+
+[weight_broadcast]
+type = "filesystem"
+
+[trainer.model]
+impl = "custom"
+ep = 2
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+mode = "full"
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+dropout = 0.05
+# Adapt attention and hybrid DeltaNet projections only.  Routed and shared MoE
+# experts remain frozen, avoiding a 256-expert adapter for this feasibility run.
+target_modules = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b", "out_proj",
+]
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 16
+group_size = 4
+max_off_policy_steps = 2
+
+[orchestrator.renderer]
+# This checkpoint is stored under a local path, so renderer auto-detection
+# cannot match its canonical Hugging Face ID.  The fallback renderer tries to
+# render a system-only prefix for token attribution, which Qwen3.6 rejects
+# before it reaches the following user message.
+name = "qwen3.6"
+
+[orchestrator.train.sampling]
+temperature = 0.7
+max_completion_tokens = 64
+extra_body = { chat_template_kwargs = { enable_thinking = false } }
+
+[[orchestrator.train.env]]
+name = "donor-model-a"
+taskset = {
+    id = "donor-coord-v1",
+    seed = 2000,
+    c = 1.0,
+    b_values = [2.0, 4.0, 8.0],
+    w_values = [0.1, 0.7, 0.9],
+    q_values = [0.1, 0.8],
+    partner_policies = ["always_cooperate", "always_defect", "tit_for_tat", "random_p"],
+    episodes_per_cell = 1,
+    horizon_min = 3,
+    horizon_max = 3,
+    task = { model = "A" },
+}
+harness = { id = "null", runtime = { type = "subprocess" } }
+
+[ckpt]
+interval = 10
+keep_last = 1
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[inference]
+enable_prefix_caching = true
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 4096
+enforce_eager = true
+
+[inference.parallel]
+tp = 2
