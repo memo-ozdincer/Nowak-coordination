@@ -35,6 +35,21 @@ def main() -> None:
     parser.add_argument("--tokenizer-path", type=Path, required=True)
     parser.add_argument("--prime-dir", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, default=Path("results"))
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        choices=VALIDATION_SEEDS,
+        default=list(VALIDATION_SEEDS),
+        help="Validation blocks to generate; use with --existing-trace to resume safely",
+    )
+    parser.add_argument(
+        "--existing-trace",
+        type=Path,
+        action="append",
+        default=[],
+        help="Previously completed Gate-4 trace block to include in final cohort validation",
+    )
     args = parser.parse_args()
 
     project = args.project.resolve()
@@ -46,9 +61,13 @@ def main() -> None:
         else project / ".venv/bin/python"
     )
     output_root = args.output_root.resolve()
-    trace_paths: list[Path] = []
-    run_dirs: list[Path] = []
-    for evaluation_seed in VALIDATION_SEEDS:
+    if len(set(args.seeds)) != len(args.seeds):
+        raise ValueError("--seeds contains a duplicate validation seed")
+    trace_paths = [path.resolve() for path in args.existing_trace]
+    if any(not path.is_file() for path in trace_paths):
+        raise FileNotFoundError("every --existing-trace must be an existing file")
+    run_dirs: list[Path] = [path.parent for path in trace_paths]
+    for evaluation_seed in args.seeds:
         config = project / f"configs/eval_gate4_base_s{evaluation_seed}.toml"
         command = [
             str(runtime_python),
@@ -136,6 +155,7 @@ def main() -> None:
                 "analysis_python": str(analysis_python),
                 "generation_python": str(runtime_python),
                 "validation_seeds": list(VALIDATION_SEEDS),
+                "generated_validation_seeds": list(args.seeds),
                 "run_directories": [str(path) for path in run_dirs],
                 "trace_paths": [str(path) for path in trace_paths],
             },
