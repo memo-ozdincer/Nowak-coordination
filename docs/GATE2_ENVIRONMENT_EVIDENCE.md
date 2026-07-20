@@ -34,6 +34,11 @@ SHA-256 `645244ee7dba8c24651e7fefd132be5357b1629c0c84c6c19fe7c3a9a92d5c97`.
   group rounds; no dyadic running average substitutes for a group target.
 - Training, held-out, and fixed diagnostic policy registries are validated at
   task construction.
+- The adapter copies `vf.Trace.state` into
+  `trace.info.coordination_trace` before JSON serialization and records the
+  registered seed role. This was added after the Gate-3 audit established that
+  Verifiers excludes `state` from raw JSONL; in-memory completeness alone was
+  not durable evidence.
 
 Primary implementation:
 
@@ -74,14 +79,13 @@ Commands:
 
 Results:
 
-- full suite: **56 passed**;
-- targeted Gate-2 suite: **36 passed**;
+- full suite: **72 passed**;
+- targeted Gate-2 suite: **37 passed**;
 - Ruff lint and formatting checks: passed;
 - local environment: Python 3.12.13, Verifiers 0.2.0;
 - pinned PRIME environment: Verifiers 0.2.1.dev47;
-- pinned-environment task construction and one-round simulator completion:
-  dyadic/A, naturalistic/B, and group/D all passed with complete terminal
-  traces.
+- pinned-environment environment suite: **9 passed** under
+  Verifiers 0.2.1.dev47, including persistent normal/invalid terminal traces.
 
 Acceptance tests explicitly cover deterministic replay, causal `w`, isolated
 `q`, hidden reputation content, both switch directions, interleaved histories,
@@ -95,12 +99,12 @@ and invalid terminal traces.
 | File | SHA-256 |
 |---|---|
 | `mechanics.py` | `9f03fcb5226a3a7b8213d933aa4c2394cf4187a395294b800b9de90ca6f6a43e` |
-| `environment.py` | `26f720ec0a72216a180d74930395bf45ad2bdcda5cc90ad31e5d7e5e82e61d5c` |
+| `environment.py` | `3862920573fb849a7f381429d4bb6d0262225344cf722554e06ff8aa51e20506` |
 | `game.py` | `99552dd2dc6726871b0cf4ca0a8cae120245dd7f8ee9591fd124acd2876335aa` |
 | `partners.py` | `ed7a80fbe8b22eba21a7252de9c982c20252ca25dfbef6b71b490c94572fb22f` |
 | `rewards.py` | `ea2165680a7a752ee26ad4a47e1d949a2b4ccc7f25fd9b4455ff73c9358edce7` |
 | `test_mechanics.py` | `86b6e26697dcf684b6cd06fc9cc77d0d8ca44daf19f308965dbe071601a77436` |
-| `test_environment.py` | `dedf3a84dfbe493e1dffbe12b0fbdeed8d1631c1f846b0cd9363a1260c27d347` |
+| `test_environment.py` | `aa08a439934807501562620baf2e4d25616932f4293d54d4648bf1a9ba6e4ddd` |
 | `test_rewards.py` | `e408cc7ba2f3857adf7801dacbcc5be39b969132da96ace09d4656189ee9453e` |
 
 These hashes identify the code exercised by the recorded targeted suite.
@@ -109,7 +113,7 @@ scientific launch.
 
 ## Gate decision
 
-Gate 2 is complete. Every required semantic check passes, and the same task
-objects construct and execute under the pinned PRIME environment. Gate 3
-(manifest, trace validation, deterministic analysis, and synthetic fixtures)
-is now the first incomplete gate. No GPU run should begin before Gate 3 passes.
+Gate 2 is complete after the raw-serialization repair. Every required semantic
+check passes, and the same task objects construct and execute under the pinned
+PRIME environment. Gate 3A (confirmatory decision feasibility) is now the first
+incomplete gate.

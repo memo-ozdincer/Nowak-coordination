@@ -5,7 +5,7 @@ from __future__ import annotations
 from itertools import product
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 import verifiers.v1 as vf
 
 from .game import Action, EpisodeConfig
@@ -16,6 +16,9 @@ SYSTEM_PROMPT = """You are playing an iterated Donor's Game.
 Reply with exactly two lines and no other text:
 ACTION: COOPERATE or ACTION: DEFECT
 FORECAST_GROUP_COOP: a number from 0.00 to 1.00"""
+TRAINING_SEEDS = {1101, 1102, 1103}
+VALIDATION_SEEDS = {2101, 2102, 2103, 2104, 2105}
+TEST_SEEDS = {3101, 3102, 3103, 3104, 3105}
 
 
 def initial_prompt(config: EpisodeConfig, reward_model: str = "A") -> str:
@@ -51,6 +54,7 @@ class DonorUser(vf.User[vf.UserConfig, DonorState]):
         self.reward_model = task.reward_model
         self.world = make_world(self.episode, self.reward_model)
         self.state.trace_header = self.world.trace_header()
+        self.state.trace_header["seed_metadata"] = task.seed_metadata
         self.state.observations = [observation.to_dict() for observation in self.world.observations]
 
     def _finish(self, reason: str) -> None:
@@ -109,10 +113,17 @@ class DonorTaskConfig(vf.TaskConfig):
 class DonorData(vf.TaskData):
     episode: dict[str, Any]
     reward_model: str = "A"
+    seed_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DonorTask(vf.Task[DonorData, DonorState, DonorTaskConfig]):
     user = DonorUser
+
+    @staticmethod
+    def _persist_state(trace: vf.Trace) -> None:
+        """Copy transient simulator state into the JSON-persistent info field."""
+
+        trace.info["coordination_trace"] = trace.state.model_dump(mode="json")
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
@@ -120,6 +131,7 @@ class DonorTask(vf.Task[DonorData, DonorState, DonorTaskConfig]):
 
     @vf.reward
     async def episode_reward(self, trace: vf.Trace) -> float:
+        self._persist_state(trace)
         if trace.state.invalid_output or not trace.state.rounds:
             return 0.0
         return sum(float(item["reward"]["total"]) for item in trace.state.rounds) / len(
@@ -198,12 +210,34 @@ class DonorTasksetConfig(vf.TasksetConfig):
     perturbation_actor: Literal["focal", "partner"] | None = None
     group_size: int = Field(default=4, ge=4, le=5)
     reputation_length: int = Field(default=4, ge=1)
+    seed_role: Literal["engineering", "training", "validation", "test"] = "engineering"
+    training_seed: int | None = None
+    evaluation_seed: int | None = None
     b_values: list[float] = Field(default_factory=list)
     w_values: list[float] = Field(default_factory=list)
     q_values: list[float] = Field(default_factory=list)
     partner_policies: list[str] = Field(default_factory=list)
     episodes_per_cell: int = Field(default=1, ge=1)
     task: DonorTaskConfig = DonorTaskConfig()
+
+    @model_validator(mode="after")
+    def validate_seed_partition(self) -> DonorTasksetConfig:
+        if self.seed_role == "training":
+            if self.training_seed not in TRAINING_SEEDS or self.evaluation_seed is not None:
+                raise ValueError("training role requires a registered training seed only")
+            if self.policy_split != "training":
+                raise ValueError("training role requires the training policy pool")
+        elif self.seed_role == "validation":
+            if self.evaluation_seed not in VALIDATION_SEEDS or self.training_seed is not None:
+                raise ValueError("validation role requires a registered validation seed")
+            if self.policy_split == "training":
+                raise ValueError("validation role requires a held-out policy pool")
+        elif self.seed_role == "test":
+            if self.evaluation_seed not in TEST_SEEDS or self.training_seed is not None:
+                raise ValueError("test role requires a registered test seed")
+            if self.policy_split == "training":
+                raise ValueError("test role requires a held-out policy pool")
+        return self
 
 
 class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
@@ -295,6 +329,12 @@ class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
                             field: getattr(episode, field) for field in episode.__dataclass_fields__
                         },
                         reward_model=self.config.task.model,
+                        seed_metadata={
+                            "role": self.config.seed_role,
+                            "training_seed": self.config.training_seed,
+                            "evaluation_seed": self.config.evaluation_seed,
+                            "episode_seed": episode.seed,
+                        },
                     ),
                     self.config.task,
                 )

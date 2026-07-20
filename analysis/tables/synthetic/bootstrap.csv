@@ -1,0 +1,17 @@
+model,metric,estimate,ci_lower,ci_upper,replication_kind,replication_units,bootstrap_iterations
+A,cooperation_rate,0.6999999999999998,0.6999999999999998,0.6999999999999998,training_seed,3,10000
+A,p_dd,0.10000000000000002,0.0,0.20000000000000004,training_seed,3,10000
+A,format_valid,1.0,1.0,1.0,training_seed,3,10000
+A,mean_payoff,1.0666666666666667,0.8000000000000002,1.3,training_seed,3,10000
+B,cooperation_rate,0.9,0.9,0.9,training_seed,3,10000
+B,p_dd,0.10000000000000002,0.10000000000000002,0.10000000000000002,training_seed,3,10000
+B,format_valid,1.0,1.0,1.0,training_seed,3,10000
+B,mean_payoff,0.8666666666666667,0.6,1.1,training_seed,3,10000
+D,cooperation_rate,0.5,0.5,0.5,training_seed,3,10000
+D,p_dd,0.16666666666666666,0.0,0.3,training_seed,3,10000
+D,format_valid,1.0,1.0,1.0,training_seed,3,10000
+D,mean_payoff,1.2666666666666666,1.0,1.5,training_seed,3,10000
+E,cooperation_rate,0.4000000000000001,0.4000000000000001,0.4000000000000001,training_seed,3,10000
+E,p_dd,0.26666666666666666,0.10000000000000002,0.4000000000000001,training_seed,3,10000
+E,format_valid,1.0,1.0,1.0,training_seed,3,10000
+E,mean_payoff,1.3666666666666665,1.1,1.6000000000000003,training_seed,3,10000

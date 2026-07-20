@@ -107,8 +107,9 @@ def test_invalid_format_terminates_without_task_reward_and_keeps_terminal_trace(
     assert user.state.terminal_event is not None
     assert user.state.terminal_event["complete"] is True
 
-    trace = type("Trace", (), {"state": user.state})()
+    trace = type("Trace", (), {"state": user.state, "info": {}})()
     assert asyncio.run(task.episode_reward(trace)) == 0.0
+    assert trace.info["coordination_trace"]["terminal_reason"] == "invalid_format"
     assert asyncio.run(task.trace_complete(trace)) == 1.0
 
 
@@ -131,6 +132,21 @@ def test_taskset_rejects_policy_split_leakage():
     assert heldout[0].data.episode["policy_split"] == "heldout"
 
 
+def test_taskset_rejects_seed_partition_leakage():
+    with pytest.raises(ValueError, match="registered validation seed"):
+        DonorTasksetConfig(
+            seed_role="validation",
+            evaluation_seed=3101,
+            policy_split="heldout",
+        )
+    with pytest.raises(ValueError, match="held-out policy pool"):
+        DonorTasksetConfig(
+            seed_role="test",
+            evaluation_seed=3101,
+            policy_split="training",
+        )
+
+
 def test_group_model_d_runs_through_verifiers_adapter_with_real_target():
     task, user = make_user(
         mode="group",
@@ -143,7 +159,9 @@ def test_group_model_d_runs_through_verifiers_adapter_with_real_target():
     event = user.state.rounds[0]
     assert event["forecast_target"] == 0.75
     assert event["reward"]["calibration"] == pytest.approx(0.0)
-    trace = type("Trace", (), {"state": user.state})()
+    trace = type("Trace", (), {"state": user.state, "info": {}})()
+    asyncio.run(task.episode_reward(trace))
+    assert trace.info["coordination_trace"]["rounds"][0]["forecast_target"] == 0.75
     assert asyncio.run(task.mean_reward_components(trace))["mean_cfe_reward"] == 0.0
 
 

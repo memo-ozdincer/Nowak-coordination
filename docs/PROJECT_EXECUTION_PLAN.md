@@ -51,13 +51,14 @@ graph-structured evaluation is added.
 | Project setup | **Working** | `.venv`, PRIME venv, and commands documented in `docs/CLUSTER_RL_RUNBOOK.md` |
 | Core environment | **Gate 2 complete** | Causal `w/q`, opaque identities, per-partner histories, switches, interleaving, action perturbations, group/CFE, naturalistic labels, and complete traces pass semantic tests |
 | Reward code | **Gate 2 complete** | A–E composition, normalized dyadic HKB, shuffled-HKB source exclusion, and genuine group Brier target are unit-tested |
-| Tests | **Passing** | `./.venv/bin/python -m pytest -q` → 56 passed on 2026-07-20; pinned PRIME/Verifiers construction also passes |
+| Tests | **Passing** | `./.venv/bin/python -m pytest -q` → 72 passed on 2026-07-20; pinned PRIME/Verifiers environment tests also pass |
 | Live model protocol | **Working** | `results/live_smoke/traces.jsonl`: 3/3 complete; `results/base_grid/traces.jsonl`: 48/48 complete, no trace errors |
 | Base evaluation | **Engineering sample only** | 48 deterministic, three-round episodes; too small/narrow for scientific inference |
 | Training runtime | **Working (Gate 0 passed)** | CUDA 12.9 `nvcc`, pinned Verifiers, selective norm-only checkpointing, and disabled default trainer compilation passed a real vLLM/FlashInfer generation and ten-update pilot; evidence: `docs/GATE0_RUNTIME_EVIDENCE.md` |
 | Model A training | **Feasibility pilot completed; scientific training not started** | `results/gate0/model_a_pilot/20260717T213000Z-6b7c288-s2005` completed 10 updates with a loadable step-10 adapter and full export; it is not a frozen scientific training run |
 | Models B/C/D/E | **Not started** | No frozen training configs or checkpoints |
-| Formal analysis pipeline | **Not started** | No run manifests, trace analyzer, bootstrap tests, tables, or figure builder |
+| Formal analysis pipeline | **Gate 3 complete** | Strict manifests/validation, deterministic registered metrics, bootstrap/permutation/Holm output, known-answer snapshots, and table-driven figures pass; evidence: `docs/GATE3_ANALYSIS_EVIDENCE.md` |
+| Statistical decision feasibility | **Blocked before Gate 4** | With 3+3 training seeds, the smallest exact two-sided seed-permutation p-value is 0.10, so the 33-test Holm rule can never pass; Gate 3A must repair the frozen design before results |
 | Stress/transfer environments | **Internal mechanics working; external transfer absent** | Switch, interleaving, forced noise, and group mechanics pass Gate 2; Akata-style 2x2 suite remains Gate 8 |
 | Paper | **Incomplete** | `paper-and-plan/incomplete_paper.pdf`; no result-complete manuscript |
 
@@ -243,21 +244,21 @@ pinned PRIME/Verifiers adapter checks passed on 2026-07-20.
 
 ### Gate 3 — Build the reproducible evaluation/analysis pipeline
 
-- [ ] Add a run wrapper that creates unique directories and manifests, resolves
+- [x] Add a run wrapper that creates unique directories and manifests, resolves
   configs, records terminal state, and refuses to overwrite.
-- [ ] Add a trace validator that fails on duplicate IDs, missing turns,
+- [x] Add a trace validator that fails on duplicate IDs, missing turns,
   malformed metrics, seed leakage, non-finite values, or incomplete traces.
-- [ ] Add one deterministic analyzer that emits tidy per-episode, per-round,
+- [x] Add one deterministic analyzer that emits tidy per-episode, per-round,
   aggregate, and bootstrap tables. Plots must consume these tables rather than
   independently reimplementing metrics.
-- [ ] Implement the EMA base-rate forecaster, Brier Skill Score, and Murphy
+- [x] Implement the EMA base-rate forecaster, Brier Skill Score, and Murphy
   reliability/resolution/uncertainty decomposition.
-- [ ] Implement outcome decomposition, Spearman sensitivities, oracle regret,
+- [x] Implement outcome decomposition, Spearman sensitivities, oracle regret,
   all amTFT metrics, HKB stress metrics split by lock type and partner
   adaptivity, and Holm-adjusted confirmatory results.
-- [ ] Commit a tiny synthetic fixture with known answers and snapshot tests for
+- [x] Commit a tiny synthetic fixture with known answers and snapshot tests for
   every metric and table.
-- [ ] One command regenerates all synthetic tables/figures from scratch and
+- [x] One command regenerates all synthetic tables/figures from scratch and
   produces byte-identical tables on a second run.
 
 Expected stable interfaces:
@@ -274,7 +275,36 @@ analysis/figures/
 
 Names may change, but the capabilities and one-command regeneration may not.
 
-**Evidence:** `PENDING`
+**Evidence:** `docs/GATE3_ANALYSIS_EVIDENCE.md`; 72-test full suite, 12-trace /
+120-round known-answer fixture, pinned Verifiers adapter tests, overwrite and
+failure-path tests, committed table snapshots, and two byte-identical complete
+regenerations passed on 2026-07-20.
+
+### Gate 3A — Repair confirmatory decision feasibility
+
+**Purpose:** prevent a mathematically unattainable positive decision rule from
+driving expensive GPU runs.
+
+Analysis Spec v1.2 assigns treatment at the training-run level, requires
+two-sided permutation p-values over independent training seeds, Holm-adjusts
+33 hypotheses, and budgets only three seeds per arm. With 3+3 seeds there are
+only `choose(6,3)=20` label assignments, so the smallest exact two-sided
+p-value is 0.10. Episode-level permutation would be pseudoreplication. At least
+seven seeds per compared arm are required even to make the smallest Holm
+threshold `0.05/33` attainable under the current family.
+
+- [ ] Choose a defensible repair before any confirmatory trace is opened:
+  fund at least seven final training seeds per arm, or reduce/structure the
+  confirmatory family based on the theory rather than anticipated results.
+- [ ] Publish `docs/ANALYSIS_SPEC.md` v1.3 with the revised replication,
+  hypothesis-family, and exact/Monte-Carlo permutation rules.
+- [ ] Independently audit v1.3 against the scientific plan and the implemented
+  33-row hypothesis registry.
+- [ ] Record the v1.3 hash in this plan and require it in every later
+  validation/test manifest.
+
+**Evidence:** blocker derivation and implementation audit in
+`docs/GATE3_ANALYSIS_EVIDENCE.md`; no confirmatory results inspected.
 
 ### Gate 4 — Characterize the base model before full RL
 
