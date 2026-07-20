@@ -882,6 +882,7 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
 def round_rows(record: dict[str, Any], config: AnalysisConfig) -> list[dict[str, Any]]:
     state = coordination_state(record)
     header = state["trace_header"]
+    episode = record.get("task", {}).get("data", {}).get("episode", {})
     suite = analysis_targets(record).get("suite")
     rows = []
     ema = config.ema_initial
@@ -909,7 +910,11 @@ def round_rows(record: dict[str, Any], config: AnalysisConfig) -> list[dict[str,
             "forecast": event["forecast"],
             "forecast_target": event["forecast_target"],
             "ema_forecast": ema if event["forecast_target"] is not None else None,
-            "group_size": len(event["partner_executed_actions"]),
+            "group_size": (
+                int(episode.get("group_size", len(event["partner_executed_actions"]) + 1))
+                if event["forecast_target"] is not None
+                else len(event["partner_executed_actions"])
+            ),
             "p_cc": event["joint_outcomes"].count("CC") / len(event["joint_outcomes"]),
             "p_cd": event["joint_outcomes"].count("CD") / len(event["joint_outcomes"]),
             "p_dc": event["joint_outcomes"].count("DC") / len(event["joint_outcomes"]),
@@ -1692,6 +1697,8 @@ def analyze(
             and row["suite"] == suite
             and row["forecast_target"] not in (None, "")
         ]
+        if not model_rows:
+            continue
         values = [float(row["forecast"]) for row in model_rows]
         targets = [float(row["forecast_target"]) for row in model_rows]
         sizes = [int(row["group_size"]) for row in model_rows]
