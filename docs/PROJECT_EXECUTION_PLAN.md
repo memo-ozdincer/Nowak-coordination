@@ -304,14 +304,22 @@ threshold `0.05/33` attainable under the current family.
   two-hypothesis family, exact permutation, cohort, and safety rules.
 - [x] Independently audit v1.3 against the scientific plan and the implemented
   six-row decision registry and reconcile every required change.
-- [x] Record the v1.3 hash in this plan and require it in every later
-  validation/test manifest.
+- [x] Record the confirmatory v1.3 hash, then record the pre-result v1.4 Gate-4
+  amendment hash and require the current hash in every later validation/test
+  manifest.
 
 **Evidence:** `docs/GATE3A_DESIGN_REPAIR_EVIDENCE.md`;
 `docs/ANALYSIS_SPEC.md` v1.3 SHA-256
 `412eaab56ef68533da91dec5b7a83fe845670c43943dd16397f94e236c0fa9e0`;
 final independent audit by `/root/spec_audit` passed after adversarial
-reconciliation; no confirmatory results inspected.
+reconciliation; no confirmatory results inspected. Before any formal Gate-4
+trace, v1.4 added only the forecast registry and validation-only base
+characterization diagnostic. Its SHA-256 is
+`708f1b16484d567177cf3fa6a75360ec2039704c83f46bbbbb1ec356b040fbec`.
+The synthetic artifacts were regenerated against that hash, and an independent
+re-audit found the corrected Gate-4 design full rank and resolved all five
+design blockers. V1.4 changes no confirmatory hypothesis, margin, test seed, or
+cohort.
 
 ### Gate 4 — Characterize the base model before full RL
 
@@ -339,7 +347,10 @@ seed; trace provenance alone is not proof.
   design, revise and version the analysis spec before trained results exist.
 
 **Evidence:** current engineering sample is
-`results/base_grid/traces.jsonl`; formal evidence `PENDING`
+`results/base_grid/traces.jsonl`; sampler transport and live probe:
+`docs/GATE4_SAMPLER_SEED_EVIDENCE.md`; frozen registry and decision rule:
+`docs/GATE4_BASE_CHARACTERIZATION_SPEC.md`; formal 500-trace evidence
+`PENDING`
 
 ### Gate 5 — Freeze training and prove learning signal quality
 

@@ -1,0 +1,50 @@
+model = "/home/memoozd/scratch/models/Qwen3.6-35B-A3B-FP8"
+num_tasks = 100
+num_rollouts = 1
+shuffle = false
+max_concurrent = 32
+max_turns = 10
+max_input_tokens = 12000
+max_output_tokens = 640
+max_total_tokens = 12640
+rich = false
+push = false
+
+[taskset]
+id = "donor-coord-v1"
+registry = "gate4_base_characterization"
+num_tasks = 100
+seed = 4210200
+horizon_min = 10
+horizon_max = 10
+policy_split = "heldout"
+policy_arm = "Base"
+seed_role = "validation"
+evaluation_seed = 2102
+sampling_seed = 2102
+sampling_temperature = 0.7
+sampling_top_p = 1.0
+sampling_enable_thinking = false
+
+[taskset.task]
+model = "A"
+
+[harness]
+id = "null"
+
+[harness.runtime]
+type = "subprocess"
+
+[client]
+type = "eval"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_var = "VLLM_API_KEY"
+
+[sampling]
+temperature = 0.7
+top_p = 1.0
+max_tokens = 64
+seed = 2102
+
+[sampling.chat_template_kwargs]
+enable_thinking = false

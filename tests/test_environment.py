@@ -10,6 +10,7 @@ from nowak_coordination.environment import (
     DonorTasksetConfig,
     DonorUser,
 )
+from nowak_coordination.seeded_eval import requested_sampler_seed
 
 
 def make_user(**config_overrides: object) -> tuple[DonorTask, DonorUser]:
@@ -96,6 +97,28 @@ def test_user_simulator_logs_complete_scientific_trace():
     }
 
 
+def test_first_state_synchronized_response_restores_trace_provenance():
+    task, user = make_user(
+        policy_arm="Base",
+        sampling_seed=2901,
+        sampling_temperature=0.7,
+        sampling_top_p=1.0,
+        sampling_enable_thinking=False,
+    )
+    # Verifiers setup_task runs before its remote state channel is attached.
+    user._inert_state = DonorState()
+    asyncio.run(user.respond("ACTION: COOPERATE\nFORECAST_GROUP_COOP: 0.50"))
+    header = user.state.trace_header
+    assert header["policy_arm"] == "Base"
+    assert header["seed_metadata"]["episode_seed"] == task.data.episode["seed"]
+    assert header["sampling_metadata"] == {
+        "temperature": 0.7,
+        "top_p": 1.0,
+        "enable_thinking": False,
+        "requested_seed": 2901,
+    }
+
+
 def test_invalid_format_terminates_without_task_reward_and_keeps_terminal_trace():
     task, user = make_user()
     asyncio.run(user.respond(""))
@@ -151,6 +174,129 @@ def test_taskset_rejects_seed_partition_leakage():
             seed_role="test",
             evaluation_seed=3101,
             policy_split="training",
+        )
+
+
+def test_gate4_registry_is_exact_balanced_and_seeded():
+    all_tasks = []
+    for evaluation_seed in range(2101, 2106):
+        tasks = DonorTaskset(
+            DonorTasksetConfig(
+                id="local/donor",
+                registry="gate4_base_characterization",
+                num_tasks=100,
+                seed=4_210_100 + (evaluation_seed - 2101) * 100,
+                horizon_min=10,
+                horizon_max=10,
+                policy_split="heldout",
+                policy_arm="Base",
+                seed_role="validation",
+                evaluation_seed=evaluation_seed,
+                sampling_seed=evaluation_seed,
+                sampling_temperature=0.7,
+                sampling_top_p=1.0,
+                sampling_enable_thinking=False,
+                task=DonorTaskConfig(model="A"),
+            )
+        ).load()
+        assert len(tasks) == 100
+        assert {
+            (
+                task.data.episode["b"],
+                task.data.episode["w"],
+                task.data.episode["q"],
+            )
+            for task in tasks
+        } == {
+            (b, w, q)
+            for b in (2.0, 3.0, 5.0, 8.0)
+            for w in (0.1, 0.3, 0.5, 0.7, 0.9)
+            for q in (0.1, 0.3, 0.5, 0.7, 0.9)
+        }
+        counts = {
+            name: sum(task.data.analysis_targets["scenario"] == name for task in tasks)
+            for name in {
+                "heldout_forgiving_grudger",
+                "heldout_delayed_tft",
+                "heldout_probabilistic_defector",
+                "heldout_noisy_copy",
+                "diagnostic_switch",
+                "diagnostic_exploitability",
+                "heldout_group_forecast",
+            }
+        }
+        assert counts == {
+            "heldout_forgiving_grudger": 15,
+            "heldout_delayed_tft": 15,
+            "heldout_probabilistic_defector": 15,
+            "heldout_noisy_copy": 15,
+            "diagnostic_switch": 15,
+            "diagnostic_exploitability": 15,
+            "heldout_group_forecast": 10,
+        }
+        for axis in ("w", "q"):
+            for value in (0.1, 0.3, 0.5, 0.7, 0.9):
+                assert sum(
+                    task.data.episode[axis] == value
+                    for task in tasks
+                    if task.data.analysis_targets["scenario"]
+                    == "diagnostic_exploitability"
+                ) == 3
+        exploitability = [
+            task
+            for task in tasks
+            if task.data.analysis_targets["scenario"] == "diagnostic_exploitability"
+        ]
+        assert all(
+            task.data.analysis_targets["safe_defect_mean_payoff_provenance"]["episode_seed"]
+            == task.data.episode["seed"]
+            for task in exploitability
+        )
+        group = [
+            task
+            for task in tasks
+            if task.data.analysis_targets["scenario"] == "heldout_group_forecast"
+        ]
+        assert {task.data.episode["partner_policy"] for task in group} == {
+            "forgiving_grudger",
+            "delayed_tit_for_tat",
+            "probabilistic_defector",
+            "copy_with_noise_10%",
+        }
+        assert {task.data.episode["group_size"] for task in group} == {4, 5}
+        assert {requested_sampler_seed(task) for task in tasks} == {evaluation_seed}
+        all_tasks.extend(tasks)
+    assert len({task.data.episode["seed"] for task in all_tasks}) == 500
+    assert sum(task.data.analysis_targets["suite"] == "forecast" for task in all_tasks) == 50
+    assert sum(task.data.analysis_targets["suite"] == "switch" for task in all_tasks) == 75
+    assert sum(task.data.analysis_targets["suite"] == "exploitability" for task in all_tasks) == 75
+    switch_directions = {
+        direction: sum(
+            task.data.analysis_targets["switch_direction"] == direction for task in all_tasks
+        )
+        for direction in {"TFT_to_AD", "AD_to_TFT"}
+    }
+    assert sorted(switch_directions.values()) == [37, 38]
+
+
+def test_gate4_registry_rejects_cosmetic_or_wrong_sampler_seed():
+    with pytest.raises(ValueError, match="explicit model sampling seed"):
+        DonorTasksetConfig(
+            seed_role="validation",
+            evaluation_seed=2101,
+            policy_split="heldout",
+            policy_arm="Base",
+        )
+    with pytest.raises(ValueError, match="must equal"):
+        DonorTasksetConfig(
+            registry="gate4_base_characterization",
+            seed_role="validation",
+            evaluation_seed=2101,
+            sampling_seed=2102,
+            policy_split="heldout",
+            policy_arm="Base",
+            horizon_min=10,
+            horizon_max=10,
         )
 
 

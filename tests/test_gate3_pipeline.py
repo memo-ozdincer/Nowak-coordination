@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 import csv
 import hashlib
@@ -11,6 +12,14 @@ import time
 
 import pytest
 
+from nowak_coordination.environment import (
+    DonorState,
+    DonorTaskConfig,
+    DonorTaskset,
+    DonorTasksetConfig,
+    DonorUser,
+)
+from nowak_coordination.gate4_registry import PARAMETER_CELLS, gate4_assignment
 from nowak_coordination.run_manifest import create_run
 from nowak_coordination.trace_analysis import (
     AnalysisConfig,
@@ -22,6 +31,7 @@ from nowak_coordination.trace_analysis import (
     episode_metrics,
     holm_adjust,
     load_jsonl,
+    validate_gate4_cohort,
     validate_records,
 )
 
@@ -29,19 +39,40 @@ from nowak_coordination.trace_analysis import (
 PROJECT = Path(__file__).parents[1]
 FIXTURE = PROJECT / "analysis/fixtures/synthetic_traces.jsonl"
 TABLE_SNAPSHOTS = {
-    "aggregates.csv": "7af7c5742fcea1733c0688ad4cc0d5d7657b7346ef2ef482cfde57ba65d45c9a",
-    "analysis_manifest.json": "2e40fe8a683192ad7e7b9dda8b104b6c549983d5a6c5c3ea4aec9d761fcb49eb",
+    "aggregates.csv": "acd55d828f62faaa728a5052902b574cf015c349301b25a390e6f97136451a7d",
+    "analysis_manifest.json": "ea2b20d8a71875c219378fff1b093a5681b53835aa92dce7ef859deced2b0c69",
     "bootstrap.csv": "f5b966f5d483451e79ab989c1e76421c136257ae7d3af513008a2abd6dfa889c",
     "confirmatory.csv": "75c6564bfdef348d890da6bd3b267e311ac766fd5ad425a36ddef0dc6653577b",
     "confirmatory_decision.json": "3a5ad2f4a5f7f9fd99cc5134d104ae81e000646eb5a060c1b1bd9b7d96bddc9b",
-    "diagnostic_cells.csv": "18eed7720b0ac9d0e15baf4df62c1b73180d90f9fd9699780aeb58d0c6f003a0",
-    "episodes.csv": "8ff0414eeda065177f372f0762f133b18b624485246cf730707aaf2906bfc46e",
-    "forecast_skill.csv": "56182c6644960591e5a48749059b55307b1005dd7d744beda3948afddd64f808",
-    "hkb_stress.csv": "534e4aca65356bfea7ede5da242f1c25c6866278d6c27ca8ec6d37252eb9b62d",
+    "diagnostic_cells.csv": "c593d0ed32aed8024fc64179e9704847db3d671bcb91de8df0e5a2fa9884dc62",
+    "episodes.csv": "0565ea60eac7c51da51b49d0f4a441799e6001b8f41341d1560a8c72e30af956",
+    "forecast_skill.csv": "c355c396a5cf0468fd17145c3e2339f5906e76cfcdb7d07b2924450f9acfb7da",
+    "gate4_sensitivity.csv": "081044237021c0c30803f67f3dea507115553ea24c010d8e6593a1b0e4c0f2f7",
+    "hkb_stress.csv": "baa7474a251ca7e968b006671fa886dc8c58b0505479147dfc32e792c996c1f5",
     "rounds.csv": "d7f96cd15095ff16c1ee57c1c0685063a0ab1da3040d651444621c47f284f839",
     "sensitivities.csv": "fbc90ae0f4a6429988249dd85df5fb2e2e02e42cf382e2328419e541d626021a",
     "validation.json": "75d87529c646a42916ac35950ec99433a8e36b96c7978af11ccbe32357247201",
 }
+
+
+def add_sampler_evidence(record: dict) -> None:
+    header = record["info"]["coordination_trace"]["trace_header"]
+    sampling = header["sampling_metadata"]
+    requested = sampling["requested_seed"]
+    record["agent"] = {
+        "sampling": {
+            "temperature": sampling.get("temperature"),
+            "top_p": sampling.get("top_p"),
+            "seed": requested,
+            "chat_template_kwargs": {"enable_thinking": sampling.get("enable_thinking")},
+        }
+    }
+    record["info"]["sampler_seed_evidence"] = {
+        "requested_seed": requested,
+        "effective_seed": requested,
+        "transport": "verifiers.v1 EvalClient -> OpenAI chat request -> vLLM",
+        "trace_agent_sampling_recorded": True,
+    }
 
 
 def test_known_answer_fixture_and_episode_metrics() -> None:
@@ -64,6 +95,8 @@ def test_known_answer_fixture_and_episode_metrics() -> None:
     assert first["retaliation_length"] == 1
     assert first["oracle_regret"] == pytest.approx(0.5)
     assert first["nonexploitability_vs_safe_defect"] == pytest.approx(0.25)
+    assert first["forecast_entropy"] == 0.0
+    assert first["total_reward_variance"] > 0
 
 
 def test_committed_table_snapshots() -> None:
@@ -137,8 +170,130 @@ def test_validator_rejects_seed_leakage() -> None:
         "seed_metadata"
     ]["episode_seed"]
     records[1]["info"]["coordination_trace"]["trace_header"]["policy_split"] = "held_out"
+    add_sampler_evidence(records[1])
     with pytest.raises(TraceValidationError, match="leaked across splits"):
         validate_records(records)
+
+
+def test_validator_requires_effective_sampler_seed_evidence() -> None:
+    record = deepcopy(load_jsonl(FIXTURE)[0])
+    header = record["info"]["coordination_trace"]["trace_header"]
+    header["policy_split"] = "heldout"
+    header["seed_metadata"].update(
+        role="validation",
+        training_seed=None,
+        evaluation_seed=2101,
+        checkpoint_training_seed=1101,
+    )
+    header["sampling_metadata"].update(temperature=0.7, top_p=1.0, requested_seed=2101)
+    record["agent"] = {"sampling": {"temperature": 0.7, "top_p": 1.0, "seed": 2101}}
+    record["info"]["sampler_seed_evidence"] = {
+        "requested_seed": 2101,
+        "effective_seed": 2101,
+        "transport": "verifiers.v1 EvalClient -> OpenAI chat request -> vLLM",
+        "trace_agent_sampling_recorded": True,
+    }
+    assert validate_records([record])["status"] == "PASS"
+    record["agent"]["sampling"]["seed"] = 2102
+    with pytest.raises(TraceValidationError, match="sampler seed mismatch"):
+        validate_records([record])
+
+
+def test_gate4_cohort_validator_enforces_exact_registry() -> None:
+    records = []
+    ordinal = 0
+    for evaluation_seed in range(2101, 2106):
+        for cell_index, (b, w, q) in enumerate(PARAMETER_CELLS):
+            assignment = gate4_assignment(evaluation_seed, cell_index)
+            ordinal += 1
+            records.append(
+                {
+                    "id": f"gate4-{ordinal}",
+                    "task": {
+                        "data": {
+                            "episode": {
+                                "b": b,
+                                "w": w,
+                                "q": q,
+                                "partner_policy": assignment.partner_policy,
+                                "mode": assignment.mode,
+                                "policy_split": assignment.policy_split,
+                                "group_size": assignment.group_size,
+                            }
+                        }
+                    },
+                    "analysis_targets": {
+                        "registry": "gate4_base_characterization_v1",
+                        "scenario": assignment.scenario,
+                        "suite": assignment.suite,
+                    },
+                    "info": {
+                        "coordination_trace": {
+                            "trace_header": {"seed_metadata": {"evaluation_seed": evaluation_seed}}
+                        }
+                    },
+                }
+            )
+    assert validate_gate4_cohort(records)["status"] == "PASS"
+    with pytest.raises(TraceValidationError, match="exactly"):
+        validate_gate4_cohort(records[:-1])
+
+
+def test_gate4_trace_validator_enforces_live_registry_contract() -> None:
+    task = DonorTaskset(
+        DonorTasksetConfig(
+            id="local/donor",
+            registry="gate4_base_characterization",
+            num_tasks=100,
+            seed=4_210_100,
+            horizon_min=10,
+            horizon_max=10,
+            policy_split="heldout",
+            policy_arm="Base",
+            seed_role="validation",
+            evaluation_seed=2101,
+            sampling_seed=2101,
+            sampling_temperature=0.7,
+            sampling_top_p=1.0,
+            sampling_enable_thinking=False,
+            task=DonorTaskConfig(model="A"),
+        )
+    ).load()[0]
+    user = DonorUser(task.config.user)
+    user._inert_state = DonorState()
+    asyncio.run(user.setup_task(task.data))
+    for _ in range(10):
+        asyncio.run(user.respond("ACTION: COOPERATE\nFORECAST_GROUP_COOP: 0.50"))
+    trace = type("Trace", (), {"state": user.state, "info": {}})()
+    asyncio.run(task.episode_reward(trace))
+    record = {
+        "id": "gate4-live-contract",
+        "is_completed": True,
+        "errors": [],
+        "task": {"data": task.data.model_dump(mode="json")},
+        "agent": {
+            "sampling": {
+                "temperature": 0.7,
+                "top_p": 1.0,
+                "seed": 2101,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        },
+        "info": {
+            **trace.info,
+            "sampler_seed_evidence": {
+                "requested_seed": 2101,
+                "effective_seed": 2101,
+                "transport": "verifiers.v1 EvalClient -> OpenAI chat request -> vLLM",
+                "trace_agent_sampling_recorded": True,
+            },
+        },
+    }
+    assert validate_records([record])["status"] == "PASS"
+    record["task"]["data"]["episode"]["seed"] += 1
+    record["info"]["coordination_trace"]["trace_header"]["seed_metadata"]["episode_seed"] += 1
+    with pytest.raises(TraceValidationError, match="episode seed drifted"):
+        validate_records([record])
 
 
 def test_forecast_decomposition_expands_fractional_group_observations() -> None:
@@ -170,6 +325,7 @@ def test_analyzer_is_byte_deterministic_and_emits_every_table(tmp_path: Path) ->
         "aggregates.csv",
         "diagnostic_cells.csv",
         "sensitivities.csv",
+        "gate4_sensitivity.csv",
         "forecast_skill.csv",
         "bootstrap.csv",
         "hkb_stress.csv",
@@ -279,6 +435,8 @@ def test_incomplete_primary_cohort_cannot_pass(tmp_path: Path) -> None:
             event["partner_policy"] = "opportunist"
             event["partner_adaptive"] = True
         records.append(record)
+    for record in records:
+        add_sampler_evidence(record)
     paths = analyze(
         records,
         tmp_path,
@@ -369,6 +527,7 @@ def test_analyzer_uses_evaluation_seeds_as_base_replications(tmp_path: Path) -> 
             training_seed=None,
             evaluation_seed=3101 + index,
         )
+        add_sampler_evidence(record)
     paths = analyze(
         records,
         tmp_path,

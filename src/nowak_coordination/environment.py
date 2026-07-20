@@ -9,6 +9,7 @@ from pydantic import Field, model_validator
 import verifiers.v1 as vf
 
 from .game import Action, EpisodeConfig
+from .gate4_registry import PARAMETER_CELLS, gate4_assignment
 from .mechanics import make_world, parse_response, system_prompt
 
 
@@ -25,7 +26,17 @@ TRAINING_SEEDS_BY_MODEL = {
 }
 VALIDATION_SEEDS = {2101, 2102, 2103, 2104, 2105}
 TEST_SEEDS = {3101, 3102, 3103, 3104, 3105}
-
+REGISTERED_SUITES = {
+    "nowak",
+    "amtft",
+    "hkb_lock",
+    "recovery",
+    "switch",
+    "interleaved",
+    "exploitability",
+    "repeated_2x2",
+    "forecast",
+}
 
 def initial_prompt(config: EpisodeConfig, reward_model: str = "A") -> str:
     """Render the deterministic opening observation for task construction."""
@@ -55,15 +66,21 @@ class DonorState(vf.State):
 class DonorUser(vf.User[vf.UserConfig, DonorState]):
     """Host-driven simulator: one parsed model response advances one round."""
 
+    def _initialize_trace_state(self) -> None:
+        if self.state.trace_header:
+            return
+        self.state.trace_header = self.world.trace_header()
+        self.state.trace_header["policy_arm"] = self.task_data.policy_arm
+        self.state.trace_header["seed_metadata"] = self.task_data.seed_metadata
+        self.state.trace_header["sampling_metadata"] = self.task_data.sampling_metadata
+        self.state.observations = [observation.to_dict() for observation in self.world.observations]
+
     async def setup_task(self, task: DonorData) -> None:
+        self.task_data = task
         self.episode = EpisodeConfig(**task.episode)
         self.reward_model = task.reward_model
         self.world = make_world(self.episode, self.reward_model)
-        self.state.trace_header = self.world.trace_header()
-        self.state.trace_header["policy_arm"] = task.policy_arm
-        self.state.trace_header["seed_metadata"] = task.seed_metadata
-        self.state.trace_header["sampling_metadata"] = task.sampling_metadata
-        self.state.observations = [observation.to_dict() for observation in self.world.observations]
+        self._initialize_trace_state()
 
     def _finish(self, reason: str) -> None:
         self.state.game_over = True
@@ -81,6 +98,9 @@ class DonorUser(vf.User[vf.UserConfig, DonorState]):
         }
 
     async def respond(self, message: str) -> vf.Messages:
+        # setup_task runs before the per-rollout state channel is attached. Reapply
+        # immutable trace provenance inside the first state-synchronized request.
+        self._initialize_trace_state()
         if message == "":
             return [{"role": "user", "content": self.world.render_prompt()}]
 
@@ -124,16 +144,17 @@ class DonorData(vf.TaskData):
     policy_arm: str = "A"
     seed_metadata: dict[str, Any] = Field(default_factory=dict)
     sampling_metadata: dict[str, Any] = Field(default_factory=dict)
+    analysis_targets: dict[str, Any] = Field(default_factory=dict)
 
 
 class DonorTask(vf.Task[DonorData, DonorState, DonorTaskConfig]):
     user = DonorUser
 
-    @staticmethod
-    def _persist_state(trace: vf.Trace) -> None:
+    def _persist_state(self, trace: vf.Trace) -> None:
         """Copy transient simulator state into the JSON-persistent info field."""
 
         trace.info["coordination_trace"] = trace.state.model_dump(mode="json")
+        trace.info["analysis_targets"] = self.data.analysis_targets
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
@@ -224,6 +245,7 @@ class DonorTasksetConfig(vf.TasksetConfig):
     sampling_temperature: float | None = Field(default=None, ge=0)
     sampling_top_p: float | None = Field(default=None, gt=0, le=1)
     sampling_enable_thinking: bool | None = None
+    sampling_seed: int | None = Field(default=None, ge=0)
     seed_role: Literal["engineering", "training", "validation", "test"] = "engineering"
     training_seed: int | None = None
     evaluation_seed: int | None = None
@@ -233,6 +255,7 @@ class DonorTasksetConfig(vf.TasksetConfig):
     q_values: list[float] = Field(default_factory=list)
     partner_policies: list[str] = Field(default_factory=list)
     episodes_per_cell: int = Field(default=1, ge=1)
+    registry: Literal["generic", "gate4_base_characterization"] = "generic"
     task: DonorTaskConfig = DonorTaskConfig()
 
     @model_validator(mode="after")
@@ -266,10 +289,84 @@ class DonorTasksetConfig(vf.TasksetConfig):
                 raise ValueError("Base evaluation cannot name a checkpoint training seed")
             if arm != "Base" and self.checkpoint_training_seed not in TRAINING_SEEDS_BY_MODEL[arm]:
                 raise ValueError("test role requires checkpoint training-seed provenance")
+        if self.seed_role in {"validation", "test"} and self.sampling_seed is None:
+            raise ValueError("scientific evaluation requires an explicit model sampling seed")
+        if self.registry == "gate4_base_characterization":
+            if self.seed_role != "validation" or self.evaluation_seed not in VALIDATION_SEEDS:
+                raise ValueError("Gate-4 base registry requires a registered validation seed")
+            if arm != "Base":
+                raise ValueError("Gate-4 base registry requires policy_arm='Base'")
+            if self.sampling_seed != self.evaluation_seed:
+                raise ValueError("Gate-4 sampling seed must equal its validation stream seed")
+            if self.horizon_min != 10 or self.horizon_max != 10:
+                raise ValueError("Gate-4 base registry requires a fixed ten-round horizon")
         return self
 
 
 class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
+    @staticmethod
+    def _safe_defect_mean_payoff(episode: EpisodeConfig) -> float:
+        """Replay the identical seeded world under the always-defect focal policy."""
+
+        world = make_world(episode, "A")
+        payoffs = []
+        while not world.done:
+            payoffs.append(float(world.step(Action.DEFECT, 0.0).event["focal_payoff"]))
+        return sum(payoffs) / len(payoffs)
+
+    def _gate4_cells(self) -> list[tuple[EpisodeConfig, dict[str, Any]]]:
+        """Build one 100-row validation block from the frozen Gate-4 registry."""
+
+        assert self.config.evaluation_seed is not None
+        cells: list[tuple[EpisodeConfig, dict[str, Any]]] = []
+        for index, (b, w, q) in enumerate(PARAMETER_CELLS):
+            assignment = gate4_assignment(self.config.evaluation_seed, index)
+            episode = EpisodeConfig(
+                game_id=(
+                    f"gate4_v{self.config.evaluation_seed}_b{b:g}_w{w:.1f}_q{q:.1f}_"
+                    f"{assignment.scenario}"
+                ),
+                b=b,
+                c=1.0,
+                w=w,
+                q=q,
+                horizon_min=10,
+                horizon_max=10,
+                partner_policy=assignment.partner_policy,
+                noise_rate=0.1
+                if assignment.partner_policy == "copy_with_noise_10%"
+                else 0.0,
+                mode=assignment.mode,
+                policy_split=assignment.policy_split,
+                partner_switch_round=6 if assignment.switch_to_policy else None,
+                switch_to_policy=assignment.switch_to_policy,
+                group_size=assignment.group_size,
+                seed=self.config.seed + index,
+            )
+            targets: dict[str, Any] = {
+                "suite": assignment.suite,
+                "registry": "gate4_base_characterization_v1",
+                "scenario": assignment.scenario,
+                "switch_direction": assignment.switch_direction,
+                "niceness_eligible": assignment.scenario
+                in {"heldout_forgiving_grudger", "heldout_delayed_tft"},
+            }
+            if assignment.suite == "exploitability":
+                targets["safe_defect_mean_payoff"] = self._safe_defect_mean_payoff(episode)
+                targets["safe_defect_mean_payoff_provenance"] = {
+                    "method": "same_seed_same_world_always_defect_replay",
+                    "registry": "gate4_base_characterization_v1",
+                    "episode_seed": episode.seed,
+                    "horizon": 10,
+                }
+            cells.append(
+                (
+                    episode,
+                    targets,
+                )
+            )
+        return cells
+
     def _episode(
         self,
         *,
@@ -309,6 +406,9 @@ class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
         )
 
     def load(self) -> list[DonorTask]:
+        registered_cells = (
+            self._gate4_cells() if self.config.registry == "gate4_base_characterization" else []
+        )
         cells = list(
             product(
                 self.config.b_values or [self.config.b],
@@ -336,16 +436,26 @@ class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
                 )
                 for index in range(self.config.num_tasks)
             ]
+        episode_cells = (
+            registered_cells
+            if registered_cells
+            else [
+                (
+                    self._episode(
+                        index=index,
+                        b=b,
+                        w=w,
+                        q=q,
+                        partner_policy=partner_policy,
+                        replicate=replicate,
+                    ),
+                    {},
+                )
+                for index, (b, w, q, partner_policy, replicate) in enumerate(cells)
+            ]
+        )
         tasks: list[DonorTask] = []
-        for index, (b, w, q, partner_policy, replicate) in enumerate(cells):
-            episode = self._episode(
-                index=index,
-                b=b,
-                w=w,
-                q=q,
-                partner_policy=partner_policy,
-                replicate=replicate,
-            )
+        for index, (episode, analysis_targets) in enumerate(episode_cells):
             world = make_world(episode, self.config.task.model)
             tasks.append(
                 DonorTask(
@@ -374,8 +484,13 @@ class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
                             "temperature": self.config.sampling_temperature,
                             "top_p": self.config.sampling_top_p,
                             "enable_thinking": self.config.sampling_enable_thinking,
-                            "requested_seed": episode.seed,
+                            "requested_seed": (
+                                self.config.sampling_seed
+                                if self.config.sampling_seed is not None
+                                else episode.seed
+                            ),
                         },
+                        analysis_targets=analysis_targets,
                     ),
                     self.config.task,
                 )

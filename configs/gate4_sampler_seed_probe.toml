@@ -1,0 +1,8 @@
+schema_version = 1
+base_url = "http://127.0.0.1:8000/v1"
+model = "/home/memoozd/scratch/models/Qwen3.6-35B-A3B-FP8"
+seeds = [2901, 2901, 2902, 2903, 2904, 2905]
+temperature = 1.0
+top_p = 1.0
+max_tokens = 32
+enable_thinking = false

@@ -1,6 +1,7 @@
-# Analysis specification v1.3
+# Analysis specification v1.4
 
-**Status:** frozen; independent Gate-3A audit passed (2026-07-20).
+**Status:** Gate-4 amendment frozen before scientific evaluation; independent
+re-audit passed 2026-07-20.
 
 This is the confirmatory analysis contract for Tier 1.  It applies only after
 the Gate-2 semantic tests and Gate-3 analysis fixtures pass.  No confirmatory
@@ -55,9 +56,12 @@ and `P(DD)`.  HKB stress tables are stratified by adaptive partners
 
 Every scientific trace carries exactly one registered suite label:
 `nowak`, `amtft`, `hkb_lock`, `recovery`, `switch`, `interleaved`,
-`exploitability`, or `repeated_2x2`. Gate 4 must freeze and validate each
-suite's complete cell registry before generation. The analyzer never infers a
-suite from observed behavior and never pools suite labels. The recovery and
+`exploitability`, `repeated_2x2`, or `forecast`. `forecast` contains only
+group episodes used for Brier/Murphy and group-reward diagnostics; it is not an
+HKB efficacy suite and is never pooled with dyadic outcomes. Gate 4 must freeze
+and validate each suite's complete cell registry before generation. The
+analyzer never infers a suite from observed behavior and never pools suite
+labels. The recovery and
 exploitability contracts below are additionally load-bearing confirmatory
 eligibility checks; a missing, extra, or off-contract trace makes the
 confirmatory decision not evaluable.
@@ -174,3 +178,19 @@ iterations for incomplete cohort enforcement, pooled diagnostics, sampler-seed
 overclaiming, and partner-class masking. Each issue was corrected. The final
 prose/code/fixture re-audit passed on 2026-07-20; no confirmatory result had
 been inspected.
+
+Version 1.4 adds the previously missing registered `forecast` suite and the
+Gate-4 base-characterization registry before any formal base trace is
+generated. Gate 4 uses all 100 `(b/c,w,q)` cells once per validation seed and a
+Latin-style scenario assignment, including 15 exploitability episodes with
+same-stream safe-defect replays and 10 group-forecast episodes. Its curriculum
+diagnostic is a per-validation-seed regression of episode cooperation on the
+three standardized axes plus scenario fixed effects, followed by a 10,000-draw
+bootstrap over the five seed-level coefficients. The interval describes
+uncertainty and is not a significance gate; the curriculum rule uses a frozen
+five-percentage-point practical-effect threshold and four-of-five directional
+stability, without adding seeds. This diagnostic is not the
+confirmatory parameter-sensitivity estimand above and cannot support a trained
+model claim. It does not change either confirmatory efficacy hypothesis,
+safety margin, test seed, or required confirmatory cohort. Its independent
+re-audit and frozen hash must be recorded before the Gate-4 launch.

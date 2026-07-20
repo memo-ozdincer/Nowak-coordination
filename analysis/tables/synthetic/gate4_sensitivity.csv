@@ -1,0 +1,1 @@
+row_type,evaluation_seed,axis,standardized_beta,mean_beta,ci_lower,ci_upper,direction_consistent_seeds,episodes,scenario_reference,design_rank,design_columns,condition_number,bootstrap_iterations,practical_effect_threshold,recognizable_signal

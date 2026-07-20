@@ -164,6 +164,7 @@ DIAGNOSTIC_POLICIES: dict[str, type[PartnerPolicy]] = {
     "always_defect": AlwaysDefect,
     "tit_for_tat": TitForTat,
     "generous_tit_for_tat": GenerousTitForTat,
+    "opportunist": Opportunist,
 }
 
 POLICY_REGISTRIES = {

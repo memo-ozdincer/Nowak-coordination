@@ -16,6 +16,8 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 from scipy.stats import spearmanr
 
+from .gate4_registry import HELDOUT_POLICIES, PARAMETER_CELLS, gate4_assignment
+
 
 TRAINING_SEEDS_BY_MODEL = {
     "A": set(range(1101, 1106)),
@@ -35,6 +37,7 @@ REGISTERED_SUITES = {
     "interleaved",
     "exploitability",
     "repeated_2x2",
+    "forecast",
 }
 
 
@@ -80,6 +83,21 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def load_jsonl_many(paths: Sequence[Path]) -> list[dict[str, Any]]:
+    return [record for path in paths for record in load_jsonl(path)]
+
+
+def combined_trace_sha256(paths: Sequence[Path]) -> str:
+    if len(paths) == 1:
+        return hashlib.sha256(paths[0].read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    for path in paths:
+        payload = path.read_bytes()
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
 def coordination_state(record: dict[str, Any]) -> dict[str, Any]:
     state = record.get("info", {}).get("coordination_trace")
     if not isinstance(state, dict):
@@ -87,6 +105,20 @@ def coordination_state(record: dict[str, Any]) -> dict[str, Any]:
             f"trace {record.get('id', '<missing>')}: missing info.coordination_trace"
         )
     return state
+
+
+def analysis_targets(record: dict[str, Any]) -> dict[str, Any]:
+    """Read targets from legacy fixtures or the persisted Verifiers task data."""
+
+    candidates = (
+        record.get("analysis_targets"),
+        record.get("info", {}).get("analysis_targets"),
+        record.get("task", {}).get("data", {}).get("analysis_targets"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
 
 
 def _check_finite(value: Any, path: str) -> None:
@@ -150,7 +182,7 @@ def _validate_recovery_suite(
     state: dict[str, Any],
     trace_id: str,
 ) -> None:
-    if record.get("analysis_targets", {}).get("suite") != "recovery":
+    if analysis_targets(record).get("suite") != "recovery":
         return
     header = state["trace_header"]
     episode = record.get("task", {}).get("data", {}).get("episode", {})
@@ -204,11 +236,18 @@ def _validate_exploitability_suite(
     state: dict[str, Any],
     trace_id: str,
 ) -> None:
-    targets = record.get("analysis_targets", {})
+    targets = analysis_targets(record)
     if targets.get("suite") != "exploitability":
         return
     header = state["trace_header"]
-    if header["seed_metadata"].get("role") != "test" or header.get("policy_split") == "training":
+    is_gate4_validation = (
+        targets.get("registry") == "gate4_base_characterization_v1"
+        and header["seed_metadata"].get("role") == "validation"
+    )
+    if (
+        not is_gate4_validation
+        and header["seed_metadata"].get("role") != "test"
+    ) or header.get("policy_split") == "training":
         raise TraceValidationError(
             f"trace {trace_id}: exploitability suite is not held-out test data"
         )
@@ -217,6 +256,216 @@ def _validate_exploitability_suite(
         raise TraceValidationError(f"trace {trace_id}: exploitability partner contract drifted")
     if targets.get("safe_defect_mean_payoff") is None:
         raise TraceValidationError(f"trace {trace_id}: exploitability counterfactual is missing")
+
+
+def _validate_sampler_seed(
+    record: dict[str, Any],
+    state: dict[str, Any],
+    trace_id: str,
+) -> None:
+    """Require three-way agreement between task provenance, request, and saved trace."""
+
+    header = state["trace_header"]
+    if header.get("seed_metadata", {}).get("role") not in {"validation", "test"}:
+        return
+    requested = header.get("sampling_metadata", {}).get("requested_seed")
+    agent_sampling = (record.get("agent") or {}).get("sampling") or {}
+    effective = agent_sampling.get("seed")
+    evidence = record.get("info", {}).get("sampler_seed_evidence", {})
+    if not isinstance(requested, int) or requested < 0:
+        raise TraceValidationError(f"trace {trace_id}: requested sampler seed is missing")
+    if effective != requested:
+        raise TraceValidationError(f"trace {trace_id}: trace agent sampler seed mismatch")
+    if evidence != {
+        "requested_seed": requested,
+        "effective_seed": requested,
+        "transport": "verifiers.v1 EvalClient -> OpenAI chat request -> vLLM",
+        "trace_agent_sampling_recorded": True,
+    }:
+        raise TraceValidationError(f"trace {trace_id}: effective sampler-seed evidence is missing")
+    sampling = header["sampling_metadata"]
+    for trace_key, agent_key in (("temperature", "temperature"), ("top_p", "top_p")):
+        if (
+            sampling.get(trace_key) is not None
+            and agent_sampling.get(agent_key) != sampling[trace_key]
+        ):
+            raise TraceValidationError(f"trace {trace_id}: recorded {trace_key} mismatch")
+    thinking = sampling.get("enable_thinking")
+    if (
+        thinking is not None
+        and agent_sampling.get("chat_template_kwargs", {}).get("enable_thinking") != thinking
+    ):
+        raise TraceValidationError(f"trace {trace_id}: recorded thinking mode mismatch")
+
+
+def _validate_gate4_trace(
+    record: dict[str, Any],
+    state: dict[str, Any],
+    trace_id: str,
+) -> None:
+    targets = analysis_targets(record)
+    if targets.get("registry") != "gate4_base_characterization_v1":
+        return
+    header = state["trace_header"]
+    episode = record.get("task", {}).get("data", {}).get("episode", {})
+    evaluation_seed = header.get("seed_metadata", {}).get("evaluation_seed")
+    sampling = header.get("sampling_metadata", {})
+    if (
+        evaluation_seed not in VALIDATION_SEEDS
+        or header.get("policy_arm") != "Base"
+        or header.get("horizon") != 10
+        or len(state["rounds"]) != 10
+        or sampling
+        != {
+            "temperature": 0.7,
+            "top_p": 1.0,
+            "enable_thinking": False,
+            "requested_seed": evaluation_seed,
+        }
+    ):
+        raise TraceValidationError(f"trace {trace_id}: Gate-4 base contract drifted")
+    try:
+        cell_index = PARAMETER_CELLS.index(
+            (float(episode["b"]), float(episode["w"]), float(episode["q"]))
+        )
+    except (KeyError, ValueError) as exc:
+        raise TraceValidationError(f"trace {trace_id}: Gate-4 parameter cell is invalid") from exc
+    expected_episode_seed = 4_210_100 + (evaluation_seed - 2101) * 100 + cell_index
+    if header["seed_metadata"].get("episode_seed") != expected_episode_seed:
+        raise TraceValidationError(f"trace {trace_id}: Gate-4 episode seed drifted")
+    assignment = gate4_assignment(evaluation_seed, cell_index)
+    if targets.get("scenario") != assignment.scenario:
+        raise TraceValidationError(f"trace {trace_id}: Gate-4 scenario assignment drifted")
+    suite = targets.get("suite")
+    mode = header.get("mode")
+    split = header.get("policy_split")
+    policies = {
+        policy
+        for event in state["rounds"]
+        for policy in (
+            event["partner_policy"]
+            if isinstance(event["partner_policy"], list)
+            else [event["partner_policy"]]
+        )
+    }
+    valid = (
+        suite == assignment.suite
+        and mode == assignment.mode
+        and split == assignment.policy_split
+        and episode.get("group_size", 4) == assignment.group_size
+    )
+    if assignment.scenario == "diagnostic_switch":
+        valid = (
+            valid
+            and policies == {assignment.partner_policy, assignment.switch_to_policy}
+            and episode.get("partner_switch_round") == 6
+            and episode.get("switch_to_policy") == assignment.switch_to_policy
+            and targets.get("switch_direction") == assignment.switch_direction
+        )
+    elif assignment.scenario == "heldout_group_forecast":
+        valid = (
+            valid
+            and policies == {assignment.partner_policy}
+            and all(event.get("forecast_target") is not None for event in state["rounds"])
+        )
+    else:
+        valid = valid and policies == {assignment.partner_policy}
+    if assignment.partner_policy == "copy_with_noise_10%":
+        valid = valid and math.isclose(float(episode.get("noise_rate", -1)), 0.1)
+    if assignment.suite == "exploitability":
+        expected_provenance = {
+            "method": "same_seed_same_world_always_defect_replay",
+            "registry": "gate4_base_characterization_v1",
+            "episode_seed": expected_episode_seed,
+            "horizon": 10,
+        }
+        valid = (
+            valid
+            and targets.get("safe_defect_mean_payoff") is not None
+            and targets.get("safe_defect_mean_payoff_provenance") == expected_provenance
+        )
+    if not valid:
+        raise TraceValidationError(f"trace {trace_id}: Gate-4 scenario mechanics drifted")
+
+
+def validate_gate4_cohort(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Enforce the frozen 500-row Gate-4 registry before characterization."""
+
+    gate4 = [
+        record
+        for record in records
+        if analysis_targets(record).get("registry") == "gate4_base_characterization_v1"
+    ]
+    if len(gate4) != 500 or len(gate4) != len(records):
+        raise TraceValidationError("Gate-4 cohort must contain exactly its 500 registered traces")
+    expected_parameters = set(PARAMETER_CELLS)
+    expected_scenarios = {
+        "heldout_forgiving_grudger": 15,
+        "heldout_delayed_tft": 15,
+        "heldout_probabilistic_defector": 15,
+        "heldout_noisy_copy": 15,
+        "diagnostic_switch": 15,
+        "diagnostic_exploitability": 15,
+        "heldout_group_forecast": 10,
+    }
+    evaluation_seeds: set[int] = set()
+    for seed in sorted(VALIDATION_SEEDS):
+        block = [
+            record
+            for record in gate4
+            if coordination_state(record)["trace_header"]["seed_metadata"].get("evaluation_seed")
+            == seed
+        ]
+        if len(block) != 100:
+            raise TraceValidationError(f"Gate-4 validation seed {seed} must have 100 traces")
+        parameters = {
+            (
+                float(record["task"]["data"]["episode"]["b"]),
+                float(record["task"]["data"]["episode"]["w"]),
+                float(record["task"]["data"]["episode"]["q"]),
+            )
+            for record in block
+        }
+        if parameters != expected_parameters:
+            raise TraceValidationError(f"Gate-4 validation seed {seed} parameter grid drifted")
+        scenario_counts = {
+            scenario: sum(analysis_targets(record).get("scenario") == scenario for record in block)
+            for scenario in expected_scenarios
+        }
+        if scenario_counts != expected_scenarios:
+            raise TraceValidationError(f"Gate-4 validation seed {seed} scenario allocation drifted")
+        for record in block:
+            episode = record["task"]["data"]["episode"]
+            cell_index = PARAMETER_CELLS.index(
+                (float(episode["b"]), float(episode["w"]), float(episode["q"]))
+            )
+            assignment = gate4_assignment(seed, cell_index)
+            targets = analysis_targets(record)
+            if (
+                targets.get("scenario") != assignment.scenario
+                or targets.get("suite") != assignment.suite
+                or episode.get("partner_policy") != assignment.partner_policy
+                or episode.get("mode", "dyadic") != assignment.mode
+                or episode.get("policy_split") != assignment.policy_split
+                or episode.get("group_size", 4) != assignment.group_size
+            ):
+                raise TraceValidationError(
+                    f"Gate-4 validation seed {seed} registry row assignment drifted"
+                )
+        evaluation_seeds.add(seed)
+    group_policies = [
+        record["task"]["data"]["episode"]["partner_policy"]
+        for record in gate4
+        if analysis_targets(record).get("scenario") == "heldout_group_forecast"
+    ]
+    if set(group_policies) != set(HELDOUT_POLICIES):
+        raise TraceValidationError("Gate-4 group policy rotation does not cover held-out policies")
+    return {
+        "status": "PASS",
+        "traces": 500,
+        "evaluation_seeds": sorted(evaluation_seeds),
+        "parameter_cells_per_seed": 100,
+    }
 
 
 def validate_records(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -325,7 +574,7 @@ def validate_records(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             header.get("policy_arm", header.get("reward_model")),
             trace_id,
         )
-        targets = record.get("analysis_targets", {})
+        targets = analysis_targets(record)
         if not isinstance(targets, dict):
             raise TraceValidationError(f"trace {trace_id}: analysis_targets must be an object")
         if (
@@ -355,6 +604,8 @@ def validate_records(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             )
         _validate_recovery_suite(record, state, trace_id)
         _validate_exploitability_suite(record, state, trace_id)
+        _validate_sampler_seed(record, state, trace_id)
+        _validate_gate4_trace(record, state, trace_id)
         episode_seed = metadata.get("episode_seed")
         role = metadata.get("role")
         if role != "engineering":
@@ -486,7 +737,7 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
                 retaliation_length += 1
             else:
                 break
-    targets = record.get("analysis_targets", {})
+    targets = analysis_targets(record)
     safe_defect = targets.get("safe_defect_mean_payoff")
     oracle = targets.get("oracle_mean_payoff")
     mean_payoff = _mean(float(event["focal_payoff"]) for event in rounds)
@@ -532,6 +783,18 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
             for probability in (cooperation_rate, 1 - cooperation_rate)
             if probability > 0
         )
+    forecast_values = [float(event["forecast"]) for event in rounds]
+    forecast_bins = [min(int(forecast * 10), 9) for forecast in forecast_values]
+    forecast_entropy = (
+        -sum(
+            probability * math.log2(probability)
+            for bin_index in range(10)
+            if (probability := forecast_bins.count(bin_index) / len(forecast_bins)) > 0
+        )
+        if forecast_bins
+        else None
+    )
+    reward_values = [float(event["reward"]["total"]) for event in rounds]
     row: dict[str, Any] = {
         "trace_id": record["id"],
         "episode_id": header["episode_id"],
@@ -569,11 +832,15 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
         "partner_adaptivity": adaptivity,
         "partner_policy": next(iter(policies)) if len(policies) == 1 else "mixed",
         "suite": targets.get("suite"),
+        "registry": targets.get("registry"),
+        "scenario": targets.get("scenario"),
         "switch_direction": targets.get("switch_direction"),
         "rounds": len(rounds),
         "format_valid": float(not state["invalid_output"]),
         "cooperation_rate": cooperation_rate,
         "action_entropy": action_entropy,
+        "forecast_entropy": forecast_entropy,
+        "total_reward_variance": float(np.var(reward_values)) if reward_values else None,
         "mean_payoff": mean_payoff,
         "p_cc": outcomes.count("CC") / len(outcomes) if outcomes else 0.0,
         "p_cd": outcomes.count("CD") / len(outcomes) if outcomes else 0.0,
@@ -615,7 +882,7 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
 def round_rows(record: dict[str, Any], config: AnalysisConfig) -> list[dict[str, Any]]:
     state = coordination_state(record)
     header = state["trace_header"]
-    suite = record.get("analysis_targets", {}).get("suite")
+    suite = analysis_targets(record).get("suite")
     rows = []
     ema = config.ema_initial
     for event in state["rounds"]:
@@ -1086,6 +1353,8 @@ def analyze(
     numeric_metrics = (
         "cooperation_rate",
         "action_entropy",
+        "forecast_entropy",
+        "total_reward_variance",
         "mean_payoff",
         "p_cc",
         "p_cd",
@@ -1110,12 +1379,19 @@ def analyze(
         "mismatch",
     )
     aggregates: list[dict[str, Any]] = []
-    grouped: dict[tuple[str, str | None, str], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[str, int | None, str | None, str], list[dict[str, Any]]] = defaultdict(
+        list
+    )
     for row in episodes:
-        grouped[(row["model"], row["suite"], row["partner_adaptivity"])].append(row)
-    for (model, suite, adaptivity), group in sorted(grouped.items(), key=lambda item: str(item[0])):
+        grouped[
+            (row["model"], row["evaluation_seed"], row["suite"], row["partner_adaptivity"])
+        ].append(row)
+    for (model, evaluation_seed, suite, adaptivity), group in sorted(
+        grouped.items(), key=lambda item: str(item[0])
+    ):
         result: dict[str, Any] = {
             "model": model,
+            "evaluation_seed": evaluation_seed,
             "suite": suite,
             "partner_adaptivity": adaptivity,
             "episodes": len(group),
@@ -1132,6 +1408,7 @@ def analyze(
     diagnostic_keys = (
         "model",
         "training_seed",
+        "evaluation_seed",
         "suite",
         "partner_adaptivity",
         "partner_policy",
@@ -1165,6 +1442,7 @@ def analyze(
             (
                 row["model"],
                 episode["training_seed"],
+                episode["evaluation_seed"],
                 episode["suite"],
                 row["partner_adaptivity"],
                 episode["partner_policy"],
@@ -1176,6 +1454,7 @@ def analyze(
         (
             model,
             training_seed,
+            evaluation_seed,
             suite,
             adaptivity,
             partner_policy,
@@ -1186,6 +1465,7 @@ def analyze(
             {
                 "model": model,
                 "training_seed": training_seed,
+                "evaluation_seed": evaluation_seed,
                 "suite": suite,
                 "partner_adaptivity": adaptivity,
                 "partner_policy": partner_policy,
@@ -1215,6 +1495,7 @@ def analyze(
         (
             "model",
             "training_seed",
+            "evaluation_seed",
             "suite",
             "partner_adaptivity",
             "partner_policy",
@@ -1284,13 +1565,130 @@ def analyze(
         ),
     )
 
+    gate4_rows = [
+        row
+        for row in episodes
+        if row.get("registry") == "gate4_base_characterization_v1"
+    ]
+    gate4_sensitivity_rows: list[dict[str, Any]] = []
+    gate4_betas: dict[str, dict[int, float]] = defaultdict(dict)
+    for evaluation_seed in sorted(VALIDATION_SEEDS):
+        seed_rows = [row for row in gate4_rows if row["evaluation_seed"] == evaluation_seed]
+        if not seed_rows:
+            continue
+        scenarios = sorted({str(row["scenario"]) for row in seed_rows})
+        continuous = np.asarray(
+            [[float(row[axis]) for axis in ("b_over_c", "w", "q")] for row in seed_rows]
+        )
+        means = continuous.mean(axis=0)
+        scales = continuous.std(axis=0)
+        if np.any(scales == 0):
+            raise ValueError(f"Gate-4 seed {evaluation_seed} has a degenerate parameter axis")
+        standardized = (continuous - means) / scales
+        scenario_dummies = np.asarray(
+            [
+                [float(row["scenario"] == scenario) for scenario in scenarios[1:]]
+                for row in seed_rows
+            ]
+        )
+        design = np.column_stack((np.ones(len(seed_rows)), standardized, scenario_dummies))
+        response = np.asarray([float(row["cooperation_rate"]) for row in seed_rows])
+        coefficients, _, rank, singular_values = np.linalg.lstsq(design, response, rcond=None)
+        if rank != design.shape[1]:
+            raise ValueError(f"Gate-4 seed {evaluation_seed} sensitivity design is rank deficient")
+        condition_number = float(singular_values[0] / singular_values[-1])
+        for offset, axis in enumerate(("b_over_c", "w", "q"), start=1):
+            beta = float(coefficients[offset])
+            gate4_betas[axis][evaluation_seed] = beta
+            gate4_sensitivity_rows.append(
+                {
+                    "row_type": "validation_seed",
+                    "evaluation_seed": evaluation_seed,
+                    "axis": axis,
+                    "standardized_beta": beta,
+                    "mean_beta": None,
+                    "ci_lower": None,
+                    "ci_upper": None,
+                    "direction_consistent_seeds": None,
+                    "episodes": len(seed_rows),
+                    "scenario_reference": scenarios[0],
+                    "design_rank": int(rank),
+                    "design_columns": int(design.shape[1]),
+                    "condition_number": condition_number,
+                    "bootstrap_iterations": None,
+                    "practical_effect_threshold": 0.05,
+                    "recognizable_signal": None,
+                }
+            )
+    rng = np.random.default_rng(config.analysis_seed)
+    for axis in ("b_over_c", "w", "q"):
+        by_seed = gate4_betas.get(axis, {})
+        if not by_seed:
+            continue
+        if set(by_seed) != VALIDATION_SEEDS:
+            raise ValueError(f"Gate-4 axis {axis} is missing validation-seed coefficients")
+        values = np.asarray([by_seed[seed] for seed in sorted(by_seed)])
+        sampled = rng.choice(values, size=(config.bootstrap_iterations, len(values)), replace=True)
+        bootstrap_means = sampled.mean(axis=1)
+        mean_beta = float(values.mean())
+        majority_positive = mean_beta >= 0
+        consistent = int(sum((value >= 0) == majority_positive for value in values))
+        recognizable = (
+            consistent >= 4 and mean_beta >= 0.05 if axis in {"b_over_c", "w"} else None
+        )
+        gate4_sensitivity_rows.append(
+            {
+                "row_type": "seed_bootstrap",
+                "evaluation_seed": None,
+                "axis": axis,
+                "standardized_beta": None,
+                "mean_beta": mean_beta,
+                "ci_lower": float(np.quantile(bootstrap_means, 0.025)),
+                "ci_upper": float(np.quantile(bootstrap_means, 0.975)),
+                "direction_consistent_seeds": consistent,
+                "episodes": len(gate4_rows),
+                "scenario_reference": None,
+                "design_rank": None,
+                "design_columns": None,
+                "condition_number": None,
+                "bootstrap_iterations": config.bootstrap_iterations,
+                "practical_effect_threshold": 0.05,
+                "recognizable_signal": recognizable,
+            }
+        )
+    _write_csv(
+        output_dir / "gate4_sensitivity.csv",
+        gate4_sensitivity_rows,
+        (
+            "row_type",
+            "evaluation_seed",
+            "axis",
+            "standardized_beta",
+            "mean_beta",
+            "ci_lower",
+            "ci_upper",
+            "direction_consistent_seeds",
+            "episodes",
+            "scenario_reference",
+            "design_rank",
+            "design_columns",
+            "condition_number",
+            "bootstrap_iterations",
+            "practical_effect_threshold",
+            "recognizable_signal",
+        ),
+    )
+
     forecasts = []
-    forecast_groups = sorted({(row["model"], row["suite"]) for row in rounds}, key=str)
-    for model, suite in forecast_groups:
+    forecast_groups = sorted(
+        {(row["model"], row["evaluation_seed"], row["suite"]) for row in rounds}, key=str
+    )
+    for model, evaluation_seed, suite in forecast_groups:
         model_rows = [
             row
             for row in rounds
             if row["model"] == model
+            and row["evaluation_seed"] == evaluation_seed
             and row["suite"] == suite
             and row["forecast_target"] not in (None, "")
         ]
@@ -1306,6 +1704,7 @@ def analyze(
         forecasts.append(
             {
                 "model": model,
+                "evaluation_seed": evaluation_seed,
                 "suite": suite,
                 **decomposition,
                 "fraction_brier_score": model_bs,
@@ -1320,6 +1719,7 @@ def analyze(
         forecasts,
         (
             "model",
+            "evaluation_seed",
             "suite",
             "brier_score",
             "fraction_brier_score",
@@ -1423,6 +1823,7 @@ def analyze(
             "aggregates.csv",
             "diagnostic_cells.csv",
             "sensitivities.csv",
+            "gate4_sensitivity.csv",
             "forecast_skill.csv",
             "bootstrap.csv",
             "hkb_stress.csv",
@@ -1435,10 +1836,14 @@ def analyze(
 
 def validate_main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("traces", type=Path)
+    parser.add_argument("traces", type=Path, nargs="+")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--require-gate4-cohort", action="store_true")
     args = parser.parse_args()
-    report = validate_records(load_jsonl(args.traces))
+    records = load_jsonl_many(args.traces)
+    report = validate_records(records)
+    if args.require_gate4_cohort:
+        report["gate4_cohort"] = validate_gate4_cohort(records)
     text = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -1448,7 +1853,7 @@ def validate_main() -> None:
 
 def analyze_main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("traces", type=Path)
+    parser.add_argument("traces", type=Path, nargs="+")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--ema-initial",
@@ -1460,18 +1865,21 @@ def analyze_main() -> None:
     parser.add_argument("--permutation-iterations", type=int, default=10_000)
     parser.add_argument("--analysis-seed", type=int, default=730_031)
     parser.add_argument("--analysis-spec", type=Path, default=Path("docs/ANALYSIS_SPEC.md"))
+    parser.add_argument("--require-gate4-cohort", action="store_true")
     args = parser.parse_args()
-    trace_bytes = args.traces.read_bytes()
     spec_bytes = args.analysis_spec.read_bytes()
+    records = load_jsonl_many(args.traces)
+    if args.require_gate4_cohort:
+        validate_gate4_cohort(records)
     analyze(
-        load_jsonl(args.traces),
+        records,
         args.output_dir,
         AnalysisConfig(
             ema_initial=args.ema_initial,
             bootstrap_iterations=args.bootstrap_iterations,
             permutation_iterations=args.permutation_iterations,
             analysis_seed=args.analysis_seed,
-            input_trace_sha256=hashlib.sha256(trace_bytes).hexdigest(),
+            input_trace_sha256=combined_trace_sha256(args.traces),
             analysis_spec_sha256=hashlib.sha256(spec_bytes).hexdigest(),
         ),
     )

@@ -82,8 +82,21 @@ def git_snapshot(repo: Path) -> dict[str, Any]:
     }
 
 
-def package_versions() -> dict[str, str | None]:
+def package_versions(runtime_python: Path | None = None) -> dict[str, str | None]:
     packages = ("torch", "transformers", "vllm", "verifiers")
+    if runtime_python is not None:
+        code = (
+            "import importlib.metadata,json,platform;"
+            f"p={packages!r};"
+            "print(json.dumps({'python':platform.python_version(),**"
+            "{x:(importlib.metadata.version(x) if x in "
+            "{d.metadata['Name'].lower() for d in importlib.metadata.distributions()} "
+            "else None) for x in p}}))"
+        )
+        output = _run([str(runtime_python), "-c", code])
+        if not output:
+            raise RuntimeError(f"could not query runtime versions from {runtime_python}")
+        return json.loads(output)
     versions: dict[str, str | None] = {"python": platform.python_version()}
     for package in packages:
         try:
@@ -138,6 +151,7 @@ def create_run(
     checkpoint_training_seed: int | None = None,
     checkpoint_parent: str | None = None,
     wandb_run_id: str | None = None,
+    runtime_python: Path | None = None,
 ) -> Path:
     if not command:
         raise ValueError("run command cannot be empty")
@@ -210,7 +224,8 @@ def create_run(
             if tokenizer_path and tokenizer_path.is_dir()
             else None,
         },
-        "versions": package_versions(),
+        "versions": package_versions(runtime_python),
+        "runtime_python": str(runtime_python.resolve()) if runtime_python else None,
         "hardware": hardware_snapshot(),
         "seeds": {
             "role": seed_role,
@@ -288,6 +303,7 @@ def main() -> None:
     parser.add_argument("--model-arm", choices=("Base", "A", "B", "C", "D", "E"))
     parser.add_argument("--checkpoint-parent")
     parser.add_argument("--wandb-run-id")
+    parser.add_argument("--runtime-python", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -311,6 +327,7 @@ def main() -> None:
         checkpoint_training_seed=args.checkpoint_training_seed,
         checkpoint_parent=args.checkpoint_parent,
         wandb_run_id=args.wandb_run_id,
+        runtime_python=args.runtime_python,
     )
     status = (run_dir / "STATUS").read_text().strip()
     print(run_dir)
