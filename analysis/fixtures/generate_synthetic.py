@@ -19,24 +19,31 @@ MODELS = {
     "E": "DDCCDDCCDD",
 }
 PARTNERS = {
-    1101: "CCCCDCCCCC",
-    1102: "CCCCDCDDDD",
-    1103: "DDDDDDCCCC",
+    1: "CCCCDCCCCC",
+    2: "CCCCDCDDDD",
+    3: "DDDDDDCCCC",
+}
+TRAINING_SEEDS = {
+    "A": (1101, 1102, 1103),
+    "B": (1201, 1202, 1203),
+    "D": (1401, 1402, 1403),
+    "E": (1501, 1502, 1503),
 }
 
 
 def _record(model: str, training_seed: int, ordinal: int) -> dict:
     focal = MODELS[model]
-    partner = PARTNERS[training_seed]
+    seed_index = training_seed % 100
+    partner = PARTNERS[seed_index]
     episode_id = f"synthetic-{model}-{training_seed}"
-    direction = "tft_to_ad" if training_seed != 1103 else "ad_to_tft"
+    direction = "tft_to_ad" if seed_index != 3 else "ad_to_tft"
     policy_before, policy_after = (
         ("tit_for_tat", "always_defect")
         if direction == "tft_to_ad"
         else ("always_defect", "tit_for_tat")
     )
-    b = {1101: 2.0, 1102: 3.0, 1103: 5.0}[training_seed]
-    q = {1101: 0.1, 1102: 0.5, 1103: 0.9}[training_seed]
+    b = {1: 2.0, 2: 3.0, 3: 5.0}[seed_index]
+    q = {1: 0.1, 2: 0.5, 3: 0.9}[seed_index]
     rounds = []
     for index, (focal_action, partner_action) in enumerate(zip(focal, partner, strict=True), 1):
         focal_payoff = (b if partner_action == "C" else 0.0) - (1.0 if focal_action == "C" else 0.0)
@@ -89,13 +96,13 @@ def _record(model: str, training_seed: int, ordinal: int) -> dict:
                 "episode": {
                     "b": b,
                     "c": 1.0,
-                    "w": {1101: 0.1, 1102: 0.5, 1103: 0.9}[training_seed],
+                    "w": {1: 0.1, 2: 0.5, 3: 0.9}[seed_index],
                     "q": q,
                 }
             }
         },
         "analysis_targets": {
-            "suite": "battle_of_the_sexes" if training_seed == 1101 else "stress",
+            "suite": "repeated_2x2" if seed_index == 1 else "hkb_lock",
             "niceness_eligible": True,
             "switch_direction": direction,
             "safe_defect_mean_payoff": mean_payoff - 0.25,
@@ -115,7 +122,14 @@ def _record(model: str, training_seed: int, ordinal: int) -> dict:
                     "horizon": 10,
                     "mode": "pairwise",
                     "reward_model": model,
+                    "policy_arm": model,
                     "policy_split": "training",
+                    "sampling_metadata": {
+                        "temperature": None,
+                        "top_p": None,
+                        "enable_thinking": None,
+                        "requested_seed": 90_000 + ordinal,
+                    },
                     "seed_metadata": {
                         "role": "training",
                         "training_seed": training_seed,
@@ -145,7 +159,7 @@ def main() -> None:
             (
                 (model, training_seed)
                 for model in ("A", "B", "D", "E")
-                for training_seed in (1101, 1102, 1103)
+                for training_seed in TRAINING_SEEDS[model]
             ),
             1,
         )

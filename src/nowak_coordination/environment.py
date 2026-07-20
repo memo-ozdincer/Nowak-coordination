@@ -16,7 +16,13 @@ SYSTEM_PROMPT = """You are playing an iterated Donor's Game.
 Reply with exactly two lines and no other text:
 ACTION: COOPERATE or ACTION: DEFECT
 FORECAST_GROUP_COOP: a number from 0.00 to 1.00"""
-TRAINING_SEEDS = {1101, 1102, 1103}
+TRAINING_SEEDS_BY_MODEL = {
+    "A": set(range(1101, 1106)),
+    "B": set(range(1201, 1206)),
+    "C": set(range(1301, 1306)),
+    "D": set(range(1401, 1404)),
+    "E": set(range(1501, 1506)),
+}
 VALIDATION_SEEDS = {2101, 2102, 2103, 2104, 2105}
 TEST_SEEDS = {3101, 3102, 3103, 3104, 3105}
 
@@ -54,7 +60,9 @@ class DonorUser(vf.User[vf.UserConfig, DonorState]):
         self.reward_model = task.reward_model
         self.world = make_world(self.episode, self.reward_model)
         self.state.trace_header = self.world.trace_header()
+        self.state.trace_header["policy_arm"] = task.policy_arm
         self.state.trace_header["seed_metadata"] = task.seed_metadata
+        self.state.trace_header["sampling_metadata"] = task.sampling_metadata
         self.state.observations = [observation.to_dict() for observation in self.world.observations]
 
     def _finish(self, reason: str) -> None:
@@ -113,7 +121,9 @@ class DonorTaskConfig(vf.TaskConfig):
 class DonorData(vf.TaskData):
     episode: dict[str, Any]
     reward_model: str = "A"
+    policy_arm: str = "A"
     seed_metadata: dict[str, Any] = Field(default_factory=dict)
+    sampling_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DonorTask(vf.Task[DonorData, DonorState, DonorTaskConfig]):
@@ -210,9 +220,14 @@ class DonorTasksetConfig(vf.TasksetConfig):
     perturbation_actor: Literal["focal", "partner"] | None = None
     group_size: int = Field(default=4, ge=4, le=5)
     reputation_length: int = Field(default=4, ge=1)
+    policy_arm: Literal["Base", "A", "B", "C", "D", "E"] | None = None
+    sampling_temperature: float | None = Field(default=None, ge=0)
+    sampling_top_p: float | None = Field(default=None, gt=0, le=1)
+    sampling_enable_thinking: bool | None = None
     seed_role: Literal["engineering", "training", "validation", "test"] = "engineering"
     training_seed: int | None = None
     evaluation_seed: int | None = None
+    checkpoint_training_seed: int | None = None
     b_values: list[float] = Field(default_factory=list)
     w_values: list[float] = Field(default_factory=list)
     q_values: list[float] = Field(default_factory=list)
@@ -222,21 +237,35 @@ class DonorTasksetConfig(vf.TasksetConfig):
 
     @model_validator(mode="after")
     def validate_seed_partition(self) -> DonorTasksetConfig:
+        arm = self.policy_arm or self.task.model
         if self.seed_role == "training":
-            if self.training_seed not in TRAINING_SEEDS or self.evaluation_seed is not None:
-                raise ValueError("training role requires a registered training seed only")
+            if arm not in TRAINING_SEEDS_BY_MODEL:
+                raise ValueError("Base has no training-seed registry")
+            allowed = TRAINING_SEEDS_BY_MODEL[arm]
+            if self.training_seed not in allowed or self.evaluation_seed is not None:
+                raise ValueError(f"training role for Model {arm} requires its registered seed")
             if self.policy_split != "training":
                 raise ValueError("training role requires the training policy pool")
+            if self.checkpoint_training_seed not in (None, self.training_seed):
+                raise ValueError("training checkpoint seed must match the run training seed")
         elif self.seed_role == "validation":
             if self.evaluation_seed not in VALIDATION_SEEDS or self.training_seed is not None:
                 raise ValueError("validation role requires a registered validation seed")
             if self.policy_split == "training":
                 raise ValueError("validation role requires a held-out policy pool")
+            if arm == "Base" and self.checkpoint_training_seed is not None:
+                raise ValueError("Base evaluation cannot name a checkpoint training seed")
+            if arm != "Base" and self.checkpoint_training_seed not in TRAINING_SEEDS_BY_MODEL[arm]:
+                raise ValueError("validation role requires checkpoint training-seed provenance")
         elif self.seed_role == "test":
             if self.evaluation_seed not in TEST_SEEDS or self.training_seed is not None:
                 raise ValueError("test role requires a registered test seed")
             if self.policy_split == "training":
                 raise ValueError("test role requires a held-out policy pool")
+            if arm == "Base" and self.checkpoint_training_seed is not None:
+                raise ValueError("Base evaluation cannot name a checkpoint training seed")
+            if arm != "Base" and self.checkpoint_training_seed not in TRAINING_SEEDS_BY_MODEL[arm]:
+                raise ValueError("test role requires checkpoint training-seed provenance")
         return self
 
 
@@ -329,11 +358,23 @@ class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
                             field: getattr(episode, field) for field in episode.__dataclass_fields__
                         },
                         reward_model=self.config.task.model,
+                        policy_arm=self.config.policy_arm or self.config.task.model,
                         seed_metadata={
                             "role": self.config.seed_role,
                             "training_seed": self.config.training_seed,
                             "evaluation_seed": self.config.evaluation_seed,
+                            "checkpoint_training_seed": (
+                                self.config.checkpoint_training_seed
+                                if self.config.checkpoint_training_seed is not None
+                                else self.config.training_seed
+                            ),
                             "episode_seed": episode.seed,
+                        },
+                        sampling_metadata={
+                            "temperature": self.config.sampling_temperature,
+                            "top_p": self.config.sampling_top_p,
+                            "enable_thinking": self.config.sampling_enable_thinking,
+                            "requested_seed": episode.seed,
                         },
                     ),
                     self.config.task,

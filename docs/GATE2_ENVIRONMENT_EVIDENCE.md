@@ -79,7 +79,7 @@ Commands:
 
 Results:
 
-- full suite: **72 passed**;
+- full suite: **76 passed**;
 - targeted Gate-2 suite: **37 passed**;
 - Ruff lint and formatting checks: passed;
 - local environment: Python 3.12.13, Verifiers 0.2.0;
@@ -99,12 +99,12 @@ and invalid terminal traces.
 | File | SHA-256 |
 |---|---|
 | `mechanics.py` | `9f03fcb5226a3a7b8213d933aa4c2394cf4187a395294b800b9de90ca6f6a43e` |
-| `environment.py` | `3862920573fb849a7f381429d4bb6d0262225344cf722554e06ff8aa51e20506` |
+| `environment.py` | `ed73005303a56f11b11a27974554d679116c281169c30fab269c0f3a31a517da` |
 | `game.py` | `99552dd2dc6726871b0cf4ca0a8cae120245dd7f8ee9591fd124acd2876335aa` |
 | `partners.py` | `ed7a80fbe8b22eba21a7252de9c982c20252ca25dfbef6b71b490c94572fb22f` |
 | `rewards.py` | `ea2165680a7a752ee26ad4a47e1d949a2b4ccc7f25fd9b4455ff73c9358edce7` |
 | `test_mechanics.py` | `86b6e26697dcf684b6cd06fc9cc77d0d8ca44daf19f308965dbe071601a77436` |
-| `test_environment.py` | `aa08a439934807501562620baf2e4d25616932f4293d54d4648bf1a9ba6e4ddd` |
+| `test_environment.py` | `e57011fd8e90f51d72299fae8cc7cdc9b68b1683356d3a8762abdbb34b965fee` |
 | `test_rewards.py` | `e408cc7ba2f3857adf7801dacbcc5be39b969132da96ace09d4656189ee9453e` |
 
 These hashes identify the code exercised by the recorded targeted suite.
@@ -115,5 +115,5 @@ scientific launch.
 
 Gate 2 is complete after the raw-serialization repair. Every required semantic
 check passes, and the same task objects construct and execute under the pinned
-PRIME environment. Gate 3A (confirmatory decision feasibility) is now the first
-incomplete gate.
+PRIME environment. Gate 3A subsequently repaired the confirmatory decision
+design; Gate 4 (base-model characterization) is now the first incomplete gate.

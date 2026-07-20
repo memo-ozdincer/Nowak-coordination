@@ -1,6 +1,6 @@
-# Analysis specification v1.2
+# Analysis specification v1.3
 
-**Status:** frozen; independent audit passed (2026-07-19).
+**Status:** frozen; independent Gate-3A audit passed (2026-07-20).
 
 This is the confirmatory analysis contract for Tier 1.  It applies only after
 the Gate-2 semantic tests and Gate-3 analysis fixtures pass.  No confirmatory
@@ -9,16 +9,25 @@ version and SHA-256; analyses affected by an amendment are exploratory.
 
 ## Scope and arms
 
-The primary arms are Base, A (payoff), B (payoff + HKB), D (full), and E
-(payoff + shuffled HKB).  Each trained arm has three independent final training
-seeds.  Model C is required before making an isolated CFE claim; otherwise D is
-reported only as the bundled HKB+CFE objective.  No network-reciprocity claim
+The evaluated arms are Base, A (payoff), B (payoff + HKB), D (full), and E
+(payoff + shuffled HKB). The one confirmatory causal question is whether the
+real HKB term improves recovery from a forced coordination disruption and
+whether that effect disappears when the HKB signal is shuffled. A, B, and E
+therefore have five independent final training runs. D has three runs and is
+secondary/exploratory unless a later, pre-result amendment funds five.
+Model C is required before making an isolated CFE claim; otherwise D is
+reported only as the bundled HKB+CFE objective. No network-reciprocity claim
 is permitted without a graph environment.
 
-Training seeds are `1101, 1102, 1103`; validation seeds are `2101–2105`; test
-seeds are `3101–3105`.  The API must reject a configuration that mixes those
-sets.  Training partners and held-out evaluation partners are separate named
-pools.  Confirmatory evaluation uses only held-out policies and test seeds.
+Training streams are disjoint across objectives so the confirmatory
+seed-label permutation has independent exchangeable run-level units:
+`A={1101–1105}`, `B={1201–1205}`, `C={1301–1305}`,
+`D={1401–1403}`, and `E={1501–1505}`. C is reserved but not required for the
+Tier-1 claim. Validation seeds are `2101–2105`; test seeds are `3101–3105`.
+The API must reject a model/seed mismatch or any configuration that mixes
+training, validation, and test sets. Training partners and held-out evaluation
+partners are separate named pools. Confirmatory evaluation uses only held-out
+policies and test seeds.
 
 ## Primary estimands and units
 
@@ -44,33 +53,77 @@ Every table containing cooperation also reports `P(CC)`, `P(CD)`, `P(DC)`,
 and `P(DD)`.  HKB stress tables are stratified by adaptive partners
 (TFT-family, WSLS, opportunist) and non-adaptive partners (AC, AD, random).
 
-## Confirmatory comparisons and decision rules
+Every scientific trace carries exactly one registered suite label:
+`nowak`, `amtft`, `hkb_lock`, `recovery`, `switch`, `interleaved`,
+`exploitability`, or `repeated_2x2`. Gate 4 must freeze and validate each
+suite's complete cell registry before generation. The analyzer never infers a
+suite from observed behavior and never pools suite labels. The recovery and
+exploitability contracts below are additionally load-bearing confirmatory
+eligibility checks; a missing, extra, or off-contract trace makes the
+confirmatory decision not evaluable.
 
-The confirmatory family is:
+## Confirmatory comparison and decision rule
 
-1. A versus B: recovery time after forced noise, switch adaptation (both
-   switch directions), and Battle-of-the-Sexes mismatch.
-2. B versus E: every Family-3 metric—lock type/time, recovery, both switch
-   directions, interleaved separation, and all outcomes in the three frozen
-   `q<c/b-0.15`, `|q-c/b|<=0.15`, and `q>c/b+0.15` threshold bands.
-3. A versus D: Battle-of-the-Sexes coordination success and mismatch.
-4. A versus B: non-inferiority safeguards for `P(DD)`, exploitability, and
-   format validity.
+The confirmatory family contains exactly two hypotheses, both on the
+episode-level probability of recovering within three rounds in the frozen
+recovery suite:
 
-All effects are reported as B minus A, B minus E, or D minus A as applicable,
-with a two-sided 95% nested-bootstrap confidence interval.  The bootstrap
-resamples training seeds, then episodes within each selected seed, 10,000
-times using a fixed analysis seed recorded in the analysis manifest.  Raw
-two-sided permutation p-values are Holm-adjusted across the complete family
-above; confidence intervals are not adjusted.
+1. B minus A: real HKB improves recovery beyond payoff-only training.
+2. B minus E: real HKB improves recovery beyond an equal-weight shuffled-HKB
+   control.
 
-Non-inferiority margins are fixed as: B may not raise `P(DD)` by more than
-0.05, worsen payoff relative to the counterfactual safe-defect policy by more
-than 0.10 normalized payoff units, or reduce format validity by more than 0.01.
-A claim that HKB improves
-adaptation additionally requires the relevant primary effect to favor B after
-Holm correction and all three non-inferiority safeguards to pass.  A causal
-HKB claim additionally requires B to differ from E in the predicted direction.
+The recovery suite is dyadic with a generous-TFT partner, `b=3`, `c=1`,
+`w=1`, `q=0`, no endogenous action noise, a forced partner executed defection
+at round 5, and a fixed ten-round horizon. Model sampling uses
+`temperature=0.7`, `top_p=1.0`, and thinking disabled. The world seed and the
+requested model-sampler seed are recorded together. This metadata is
+provenance, not proof that the inference engine honored the sampler seed:
+Gate 4 must demonstrate actual seed injection through its launcher and record
+the effective engine seed before a scientific recovery trace is eligible.
+Recovery is the first stable three-round `CC` run
+after the perturbation; `recovered_within_3` is one exactly when that confirming
+window ends by round 8. Each checkpoint receives 100 episodes: 20 from each
+test seed. Other HKB stress designs remain mandatory diagnostics but are not
+confirmatory hypotheses.
+
+Each effect is reported in probability points as B minus A or B minus E with a
+two-sided 95% nested-bootstrap confidence interval. The bootstrap resamples
+the five training runs, then episodes within each selected run, 10,000 times
+using the fixed analysis seed recorded in the analysis manifest. The raw
+two-sided test exactly permutes the ten independent run-level means into two
+groups of five. The two raw p-values are Holm-adjusted together. With
+`choose(10,5)=252` assignments, the minimum two-sided exact p-value is
+`2/252≈0.00794`, so the registered decision is attainable without treating
+episodes as independent training replications.
+
+Three A-versus-B non-inferiority dimensions remain necessary conditions for
+the claim, but they form an intersection-union safety gate rather than extra
+efficacy hypotheses: B may not raise `P(DD)` by more than 0.05, worsen payoff
+relative to the counterfactual safe-defect policy by more than 0.10 normalized
+payoff units, or reduce format validity by more than 0.01. The corresponding
+two-sided 95% bootstrap bound must lie inside each margin. Requiring all three
+to pass controls the composite safety claim without adding them to the Holm
+family. `P(DD)` and format validity are evaluated on the recovery suite. The
+exploitability dimension uses a separate 100-episode suite per checkpoint,
+balanced equally across held-out always-defect and opportunist partners and
+across the five test seeds; every episode includes a same-stream always-defect
+focal counterfactual replay. Always-defect and opportunist receive separate
+non-inferiority rows and both must pass, so harm against one class cannot be
+masked by the other. Safety metrics are never pooled across suites or partner
+classes.
+
+The confirmatory HKB claim passes only if both effects favor B, both
+Holm-adjusted p-values are at most 0.05, both two-sided confidence intervals
+exclude zero in the favorable direction, and all four safety rows pass.
+Failure of either efficacy comparison or any safeguard yields no positive HKB
+claim. The diffuse v1.2 outcomes remain mandatory diagnostics, not secondary
+hypothesis tests. `diagnostic_cells.csv` reports one row per training run,
+named suite, partner-adaptivity class, partner policy, threshold band, and
+switch direction. It includes cooperation, action entropy, payoff,
+`CC/CD/DC/DD`, lock/recovery, switch/interleaving, amTFT, oracle,
+non-exploitability, and 2x2 outcomes. Adaptive, non-adaptive, and mixed
+episodes are never pooled. These diagnostics can limit or falsify the scope of
+the recovery claim but cannot rescue a failed primary decision.
 
 ## Evaluation designs and selection
 
@@ -97,16 +150,27 @@ transfer trace is generated.
 
 ## Reporting boundaries
 
-If fewer than three final training seeds complete, results are explicitly a
-feasibility study.  Base/A/B/D comparisons do not establish an isolated CFE
-effect; B without E does not establish that the HKB signal itself is causal.
+If fewer than five final A, B, or E training runs complete, the confirmatory
+HKB claim is not evaluated and the result is explicitly a feasibility study.
+D remains a three-run secondary arm. Base/A/B/D comparisons do not establish
+an isolated CFE effect; B without E does not establish that the HKB signal
+itself is causal.
 Null, harmful, and unstable results are reported under the decision branches in
 the execution plan.  Raw traces remain immutable; all derived output is
 deterministic from trace paths and this versioned specification.
 
 ## Review record
 
-Independent audits of v1.0, v1.1, and v1.2: `/root/spec_audit`, 2026-07-19.  They
-found an omitted A–B mismatch comparison, incomplete B–E Family-3 coverage,
-under-specified metrics, and an inconsistent exploitability safeguard.  All
-are addressed in v1.2.  The v1.2 re-audit passed; Gate 1 is complete.
+Independent audits of v1.0, v1.1, and v1.2: `/root/spec_audit`, 2026-07-19.
+They found an omitted A–B mismatch comparison, incomplete B–E Family-3
+coverage, under-specified metrics, and an inconsistent exploitability
+safeguard. All were addressed in v1.2.
+
+Gate 3A found that v1.2's 3+3 run-level permutation could not produce
+`p<0.10`, making its 33-hypothesis Holm rule mathematically impossible to pass.
+Version 1.3 narrows the confirmatory claim before results and assigns five
+independent training streams to A/B/E. `/root/spec_audit` rejected three draft
+iterations for incomplete cohort enforcement, pooled diagnostics, sampler-seed
+overclaiming, and partner-class masking. Each issue was corrected. The final
+prose/code/fixture re-audit passed on 2026-07-20; no confirmatory result had
+been inspected.

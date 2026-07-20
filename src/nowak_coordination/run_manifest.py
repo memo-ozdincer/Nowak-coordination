@@ -18,7 +18,13 @@ import tomllib
 from typing import Any, Sequence
 
 
-TRAINING_SEEDS = {1101, 1102, 1103}
+TRAINING_SEEDS_BY_MODEL = {
+    "A": set(range(1101, 1106)),
+    "B": set(range(1201, 1206)),
+    "C": set(range(1301, 1306)),
+    "D": set(range(1401, 1404)),
+    "E": set(range(1501, 1506)),
+}
 VALIDATION_SEEDS = {2101, 2102, 2103, 2104, 2105}
 TEST_SEEDS = {3101, 3102, 3103, 3104, 3105}
 
@@ -126,23 +132,36 @@ def create_run(
     tokenizer_path: Path | None = None,
     analysis_spec: Path | None = None,
     seed_role: str = "engineering",
+    model_arm: str | None = None,
     training_seed: int | None = None,
     evaluation_seed: int | None = None,
+    checkpoint_training_seed: int | None = None,
     checkpoint_parent: str | None = None,
     wandb_run_id: str | None = None,
 ) -> Path:
     if not command:
         raise ValueError("run command cannot be empty")
-    if seed_role == "training" and (
-        training_seed not in TRAINING_SEEDS or evaluation_seed is not None
-    ):
-        raise ValueError("training runs require a registered training seed only")
+    if seed_role == "training":
+        if model_arm not in TRAINING_SEEDS_BY_MODEL:
+            raise ValueError("training runs require --model-arm A, B, C, D, or E")
+        if training_seed not in TRAINING_SEEDS_BY_MODEL[model_arm] or evaluation_seed is not None:
+            raise ValueError(f"training runs for Model {model_arm} require its registered seed")
+        if checkpoint_training_seed not in (None, training_seed):
+            raise ValueError("training checkpoint seed must match the run training seed")
     if seed_role == "validation" and (
         evaluation_seed not in VALIDATION_SEEDS or training_seed is not None
     ):
         raise ValueError("validation runs require a registered validation seed")
     if seed_role == "test" and (evaluation_seed not in TEST_SEEDS or training_seed is not None):
         raise ValueError("test runs require a registered test seed")
+    if seed_role in {"validation", "test"} and model_arm is not None:
+        if model_arm == "Base" and checkpoint_training_seed is not None:
+            raise ValueError("Base evaluation cannot name a checkpoint training seed")
+        if (
+            model_arm != "Base"
+            and checkpoint_training_seed not in TRAINING_SEEDS_BY_MODEL[model_arm]
+        ):
+            raise ValueError("evaluation runs require checkpoint training-seed provenance")
     config_bytes = config.read_bytes()
     tomllib.loads(config_bytes.decode())
     project_state = git_snapshot(project)
@@ -179,6 +198,7 @@ def create_run(
             "sha256": sha256_file(analysis_spec),
         },
         "model": {
+            "arm": model_arm,
             "path": str(model_path.resolve()) if model_path else None,
             "config_sha256": sha256_file(model_path / "config.json")
             if model_path and model_path.is_dir()
@@ -197,6 +217,9 @@ def create_run(
             "run_seed": seed,
             "training_seed": training_seed,
             "evaluation_seed": evaluation_seed,
+            "checkpoint_training_seed": (
+                checkpoint_training_seed if checkpoint_training_seed is not None else training_seed
+            ),
         },
         "checkpoint_parent": checkpoint_parent,
         "wandb_run_id": wandb_run_id,
@@ -261,6 +284,8 @@ def main() -> None:
     )
     parser.add_argument("--training-seed", type=int)
     parser.add_argument("--evaluation-seed", type=int)
+    parser.add_argument("--checkpoint-training-seed", type=int)
+    parser.add_argument("--model-arm", choices=("Base", "A", "B", "C", "D", "E"))
     parser.add_argument("--checkpoint-parent")
     parser.add_argument("--wandb-run-id")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -280,8 +305,10 @@ def main() -> None:
         tokenizer_path=args.tokenizer_path,
         analysis_spec=args.analysis_spec,
         seed_role=args.seed_role,
+        model_arm=args.model_arm,
         training_seed=args.training_seed,
         evaluation_seed=args.evaluation_seed,
+        checkpoint_training_seed=args.checkpoint_training_seed,
         checkpoint_parent=args.checkpoint_parent,
         wandb_run_id=args.wandb_run_id,
     )

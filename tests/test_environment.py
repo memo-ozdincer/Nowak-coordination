@@ -133,6 +133,13 @@ def test_taskset_rejects_policy_split_leakage():
 
 
 def test_taskset_rejects_seed_partition_leakage():
+    with pytest.raises(ValueError, match="Model B"):
+        DonorTasksetConfig(
+            seed_role="training",
+            training_seed=1101,
+            policy_split="training",
+            task=DonorTaskConfig(model="B"),
+        )
     with pytest.raises(ValueError, match="registered validation seed"):
         DonorTasksetConfig(
             seed_role="validation",

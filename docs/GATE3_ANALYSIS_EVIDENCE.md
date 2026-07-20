@@ -1,6 +1,7 @@
 # Gate 3 reproducibility and analysis evidence
 
-**Status:** complete — audited 2026-07-20 EDT.
+**Status:** complete — audited 2026-07-20 EDT; statistical blocker subsequently
+resolved by `docs/GATE3A_DESIGN_REPAIR_EVIDENCE.md`.
 
 This ledger covers the CPU-only reproducibility and analysis gate. It is not a
 scientific evaluation and contains no model result. The synthetic arms are
@@ -73,7 +74,7 @@ Acceptance commands and results:
 ```
 
 - Ruff formatting and lint: passed.
-- Full suite: **72 passed**.
+- Full suite after Gate-3A hardening: **76 passed**.
 - Targeted Gate-2 semantic suite after persistence repair: **37 passed**.
 - Pinned PRIME environment (`verifiers==0.2.1.dev47`):
   `tests/test_environment.py` **9 passed**.
@@ -100,13 +101,12 @@ at training-run level. Even 4–6 seeds per arm cannot reach the smallest
 Holm threshold `0.05/33`; seven per arm is the minimum that makes it
 attainable (`2/choose(14,7) ≈ 0.000583`).
 
-No confirmatory result has been opened, so this must be repaired now. Gate 3A
-in the execution plan blocks Gate 4 until a new independently audited spec
-either funds at least seven seeds per trained arm or defensibly reduces and
-structures the confirmatory family. Three seeds remain adequate for a labeled
-feasibility study, but not for the registered positive decision rule.
+No confirmatory result was opened. Gate 3A repaired this by narrowing the
+efficacy family to two forced-recovery hypotheses, using five disjoint A/B/E
+training streams, and enforcing exact cohort and partner-specific safety
+rules. See `docs/GATE3A_DESIGN_REPAIR_EVIDENCE.md`.
 
 ## Gate decision
 
-Gate 3's software acceptance checks pass. Gate 3A, not GPU execution, is now
-the first incomplete gate. The available `g9` GPU was deliberately unused.
+Gate 3's software acceptance checks pass. Gate 3A also now passes; Gate 4 is
+the first incomplete gate.

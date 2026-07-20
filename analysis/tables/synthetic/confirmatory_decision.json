@@ -1,0 +1,16 @@
+{
+  "issues": [
+    "recovery A: training-seed cohort mismatch",
+    "recovery A: 25 seed cells are not exactly 20 episodes",
+    "recovery B: training-seed cohort mismatch",
+    "recovery B: 25 seed cells are not exactly 20 episodes",
+    "recovery E: training-seed cohort mismatch",
+    "recovery E: 25 seed cells are not exactly 20 episodes",
+    "exploitability A: training-seed cohort mismatch",
+    "exploitability A: 25 seed cells lack 10 episodes per policy",
+    "exploitability B: training-seed cohort mismatch",
+    "exploitability B: 25 seed cells lack 10 episodes per policy"
+  ],
+  "reason": "confirmatory cohort contract failed",
+  "status": "NOT_EVALUABLE"
+}

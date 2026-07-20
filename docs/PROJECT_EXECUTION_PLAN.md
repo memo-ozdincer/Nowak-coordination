@@ -13,8 +13,9 @@ The Tier-1 project is complete when it provides a reproducible answer to:
 
 > Does post-training a Qwen3.6-35B-A3B agent with verifiable Donor's-Game
 > rewards produce parameter-sensitive, adaptive, non-exploitable coordination,
-> and do HKB/CFE additions improve it over payoff-only RL or merely change the
-> equilibrium it selects?
+> and, under a fixed generous-TFT forced-disruption suite, does a real HKB
+> reward improve rapid cooperative recovery over payoff-only and shuffled-HKB
+> training without worsening defection, exploitability, or format validity?
 
 Completion requires all of the following:
 
@@ -28,13 +29,15 @@ Completion requires all of the following:
    objective.
 3. Base and trained models are evaluated on the preregistered Nowak, amTFT,
    HKB-stress, and repeated-2x2 transfer suites with uncertainty, outcome
-   decompositions, held-out partners, and corrected confirmatory tests.
+   decompositions, and held-out partners. Only forced-disruption recovery is
+   confirmatory for HKB; the broader dynamics are mandatory diagnostics and
+   cannot be generalized from a recovery result.
 4. The result package can be regenerated from a clean checkout plus the
    documented external PRIME patch: manifests, resolved configs, checkpoints,
    raw traces, analysis tables, figures, and a final paper/report.
 5. The conclusion follows the observed decision branch, including the valid
-   possibilities that payoff alone is sufficient, HKB is inert, or HKB
-   stabilizes mutual defection.
+   possibilities that payoff alone is sufficient, HKB is inert, HKB improves
+   only the registered recovery setting, or HKB stabilizes mutual defection.
 
 Tier 2 (Trust-and-Split, GovSim, MACHIAVELLI, network reciprocity, and extra
 reward controls) is not part of this finish line. Do not let it delay Tier 1.
@@ -47,18 +50,18 @@ graph-structured evaluation is added.
 
 | Area | State | Verified evidence / remaining gap |
 |---|---|---|
-| Research design | **Gate 1 complete** | `docs/ANALYSIS_SPEC.md` v1.2 is independently audited and frozen; environment design is `docs/ENVIRONMENT_SPEC.md` |
+| Research design | **Gates 1/3A complete** | `docs/ANALYSIS_SPEC.md` v1.3 is independently audited and frozen around the narrow HKB recovery claim; environment design is `docs/ENVIRONMENT_SPEC.md` |
 | Project setup | **Working** | `.venv`, PRIME venv, and commands documented in `docs/CLUSTER_RL_RUNBOOK.md` |
 | Core environment | **Gate 2 complete** | Causal `w/q`, opaque identities, per-partner histories, switches, interleaving, action perturbations, group/CFE, naturalistic labels, and complete traces pass semantic tests |
 | Reward code | **Gate 2 complete** | A–E composition, normalized dyadic HKB, shuffled-HKB source exclusion, and genuine group Brier target are unit-tested |
-| Tests | **Passing** | `./.venv/bin/python -m pytest -q` → 72 passed on 2026-07-20; pinned PRIME/Verifiers environment tests also pass |
+| Tests | **Passing** | `./.venv/bin/python -m pytest -q` → 76 passed on 2026-07-20; pinned PRIME/Verifiers environment tests also pass |
 | Live model protocol | **Working** | `results/live_smoke/traces.jsonl`: 3/3 complete; `results/base_grid/traces.jsonl`: 48/48 complete, no trace errors |
 | Base evaluation | **Engineering sample only** | 48 deterministic, three-round episodes; too small/narrow for scientific inference |
 | Training runtime | **Working (Gate 0 passed)** | CUDA 12.9 `nvcc`, pinned Verifiers, selective norm-only checkpointing, and disabled default trainer compilation passed a real vLLM/FlashInfer generation and ten-update pilot; evidence: `docs/GATE0_RUNTIME_EVIDENCE.md` |
 | Model A training | **Feasibility pilot completed; scientific training not started** | `results/gate0/model_a_pilot/20260717T213000Z-6b7c288-s2005` completed 10 updates with a loadable step-10 adapter and full export; it is not a frozen scientific training run |
 | Models B/C/D/E | **Not started** | No frozen training configs or checkpoints |
 | Formal analysis pipeline | **Gate 3 complete** | Strict manifests/validation, deterministic registered metrics, bootstrap/permutation/Holm output, known-answer snapshots, and table-driven figures pass; evidence: `docs/GATE3_ANALYSIS_EVIDENCE.md` |
-| Statistical decision feasibility | **Blocked before Gate 4** | With 3+3 training seeds, the smallest exact two-sided seed-permutation p-value is 0.10, so the 33-test Holm rule can never pass; Gate 3A must repair the frozen design before results |
+| Statistical decision feasibility | **Gate 3A complete** | Two recovery efficacy tests, five disjoint A/B/E streams, exact 252-assignment inference, an exact 2,500-trace cohort, and four partner-specific safety rows pass independent audit |
 | Stress/transfer environments | **Internal mechanics working; external transfer absent** | Switch, interleaving, forced noise, and group mechanics pass Gate 2; Akata-style 2x2 suite remains Gate 8 |
 | Paper | **Incomplete** | `paper-and-plan/incomplete_paper.pdf`; no result-complete manuscript |
 
@@ -191,7 +194,8 @@ after results are visible.
 **Evidence:** `docs/ANALYSIS_SPEC.md` v1.2, SHA-256
 `e8e1304da0d1e67d164c17f72c1c9f78a36dbc601b1642d4203cbf68aaec0719`;
 independent audit by `/root/spec_audit` on 2026-07-19 passed after two
-documented reconciliation rounds.
+documented reconciliation rounds. Superseded before confirmatory results by
+v1.3 under Gate 3A.
 
 ### Gate 2 — Make the task semantics match the claims
 
@@ -293,23 +297,28 @@ p-value is 0.10. Episode-level permutation would be pseudoreplication. At least
 seven seeds per compared arm are required even to make the smallest Holm
 threshold `0.05/33` attainable under the current family.
 
-- [ ] Choose a defensible repair before any confirmatory trace is opened:
-  fund at least seven final training seeds per arm, or reduce/structure the
-  confirmatory family based on the theory rather than anticipated results.
-- [ ] Publish `docs/ANALYSIS_SPEC.md` v1.3 with the revised replication,
-  hypothesis-family, and exact/Monte-Carlo permutation rules.
-- [ ] Independently audit v1.3 against the scientific plan and the implemented
-  33-row hypothesis registry.
-- [ ] Record the v1.3 hash in this plan and require it in every later
+- [x] Choose a defensible repair before any confirmatory trace is opened:
+  narrow the claim to B−A and B−E rapid recovery, use five disjoint training
+  streams per A/B/E arm, and retain the broad outcomes as diagnostics.
+- [x] Draft `docs/ANALYSIS_SPEC.md` v1.3 with the revised replication,
+  two-hypothesis family, exact permutation, cohort, and safety rules.
+- [x] Independently audit v1.3 against the scientific plan and the implemented
+  six-row decision registry and reconcile every required change.
+- [x] Record the v1.3 hash in this plan and require it in every later
   validation/test manifest.
 
-**Evidence:** blocker derivation and implementation audit in
-`docs/GATE3_ANALYSIS_EVIDENCE.md`; no confirmatory results inspected.
+**Evidence:** `docs/GATE3A_DESIGN_REPAIR_EVIDENCE.md`;
+`docs/ANALYSIS_SPEC.md` v1.3 SHA-256
+`412eaab56ef68533da91dec5b7a83fe845670c43943dd16397f94e236c0fa9e0`;
+final independent audit by `/root/spec_audit` passed after adversarial
+reconciliation; no confirmatory results inspected.
 
 ### Gate 4 — Characterize the base model before full RL
 
-Run this only after Gates 1–3, because the current 48 traces lack causal `w/q`
-mechanics and formal metrics.
+Run this only after Gates 1–3A. The current 48 traces lack causal `w/q`
+mechanics and formal metrics. Before the formal base run, prove that the
+launcher injects the requested sampler seed and records the effective engine
+seed; trace provenance alone is not proof.
 
 - [ ] Run a 500-episode stratified base characterization spanning all
   `b/c={2,3,5,8}`, `w/q={.1,.3,.5,.7,.9}`, adaptive and non-adaptive partners,
@@ -336,7 +345,8 @@ mechanics and formal metrics.
 
 - [ ] Create immutable configs for Base evaluation and Models A/B/C/D/E. All
   shared hyperparameters, curriculum samples, initial checkpoint, LoRA targets,
-  and training seeds must match; only the declared reward changes.
+  seed-generation procedure, and seed count must match; registered RNG streams
+  are disjoint across arms, and only the declared reward changes.
 - [ ] Keep the ten-step config labeled engineering-only. Final configs use the
   frozen curriculum: reciprocity, adaptation, naturalistic, then group/CFE.
 - [ ] For each variant, run a 50-update screening seed before the full run.
@@ -357,9 +367,10 @@ choice; record the Gate-0 measurement and freeze the final choice here.
 
 ### Gate 6 — Train the Tier-1 ablation matrix
 
-- [ ] Train A, B, and D for three independent final seeds with identical frozen
-  curricula and selection rules.
-- [ ] Train E for three seeds if making an HKB-mechanism claim.
+- [ ] Train A and B for five disjoint independent final seeds and D for three,
+  with identical frozen curricula and selection rules apart from registered
+  RNG streams and reward definitions.
+- [ ] Train E for five disjoint seeds for the HKB-mechanism claim.
 - [ ] Train C for three seeds if making an isolated CFE claim; otherwise state
   that D evaluates only the combined objective.
 - [ ] Checkpoints, manifests, validation traces, reward-component distributions,
@@ -375,7 +386,7 @@ future/exploratory work.
 
 **Evidence:** `PENDING`
 
-### Gate 7 — Run the internal confirmatory suites
+### Gate 7 — Run internal recovery confirmation and broad diagnostics
 
 - [ ] Run the frozen full Nowak grid for Base and every accepted Tier-1
   checkpoint with identical prompts, sampling, and seed allocation.
@@ -385,6 +396,9 @@ future/exploratory work.
 - [ ] Run HKB stress tests: lock-to-CC/DD/alternation, recovery after round-5
   noise, TFT→AD and AD→TFT round-6 switches, interleaved partners, and the
   `q≈c/b` threshold bands.
+- [ ] Enforce the exact v1.3 recovery/exploitability cohort before evaluating
+  the two recovery hypotheses and four safety rows. Treat every other internal
+  outcome as diagnostic, not confirmatory.
 - [ ] Report adaptive/non-adaptive partner strata and all four joint outcomes.
 - [ ] Validate traces before unblinding aggregate model labels. Run the frozen
   bootstrap/Holm analysis once and preserve its machine-readable output.

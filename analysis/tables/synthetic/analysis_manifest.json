@@ -1,10 +1,10 @@
 {
   "analysis_seed": 730031,
-  "analysis_spec_sha256": "e8e1304da0d1e67d164c17f72c1c9f78a36dbc601b1642d4203cbf68aaec0719",
+  "analysis_spec_sha256": "412eaab56ef68533da91dec5b7a83fe845670c43943dd16397f94e236c0fa9e0",
   "bootstrap_iterations": 10000,
   "ema_alpha": 0.2,
   "ema_initial_training_pool_mean": 0.5,
-  "input_trace_sha256": "f427a6c3c4de4f7030b9c11dba5e9cd89b1295a5bf8fef24045b8f692ba7834a",
+  "input_trace_sha256": "a4e0a7a2bf62c8d9967305c4abed36ecb896884c5fde2e5ccb6bb58d62983512",
   "permutation_iterations": 10000,
   "schema_version": 1,
   "trace_ids": [

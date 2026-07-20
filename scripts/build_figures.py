@@ -22,10 +22,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tables-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--suite", required=True)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    aggregates = _rows(args.tables_dir / "aggregates.csv")
+    aggregates = [
+        row for row in _rows(args.tables_dir / "aggregates.csv") if row["suite"] == args.suite
+    ]
+    if not aggregates:
+        raise ValueError(f"no aggregate rows for suite {args.suite!r}")
     models = sorted({row["model"] for row in aggregates})
     p_cc = [
         sum(float(row["mean_p_cc"]) for row in aggregates if row["model"] == model)
@@ -39,7 +44,9 @@ def main() -> None:
     fig.savefig(args.output_dir / "outcomes.png", dpi=120, metadata={"Software": "Gate3"})
     plt.close(fig)
 
-    forecasts = _rows(args.tables_dir / "forecast_skill.csv")
+    forecasts = [
+        row for row in _rows(args.tables_dir / "forecast_skill.csv") if row["suite"] == args.suite
+    ]
     fig, axis = plt.subplots(figsize=(6, 3.5))
     axis.bar(
         [row["model"] for row in forecasts],

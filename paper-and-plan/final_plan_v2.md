@@ -452,3 +452,11 @@ Candidate titles: *"Evolutionary Pressures for Adaptive Coordination in Language
 ## 15. Key sources to keep on hand
 
 Nowak (2006); Kelso (2012); Hancock et al. (2024); Axelrod (1984); Lerer & Peysakhovich (2017, amTFT); Tennant et al. (2025, Moral Alignment for LLM Agents); Duque et al. (2025, Advantage Alignment) and Piché et al. (2025, Learning Robust Social Strategies with LLMs); Akata et al. (2025, Nature Human Behaviour); Piatti et al. (2024, GovSim); Vallinder & Hughes (2024, Donor Game — note: prompting-based, no loss function); Zhou et al. (2024, SOTOPIA); SOTOPIA-TOM (2026); Ng, Harada & Russell (1999, potential-based reward shaping); Murphy (1973, Brier score decomposition); Prelec (2004, Bayesian Truth Serum).
+> **Operational supersession (2026-07-20):** This document preserves the broad
+> scientific motivation and diagnostic suite, but its broad HKB confirmatory
+> family is superseded by `docs/ANALYSIS_SPEC.md` v1.3 and
+> `docs/PROJECT_EXECUTION_PLAN.md`. The only confirmatory HKB claim is rapid
+> cooperative recovery in the fixed generous-TFT forced-disruption suite,
+> compared B−A and B−E with the registered safety gate. Switch, interleaving,
+> threshold, amTFT, and transfer outcomes remain mandatory diagnostics and
+> must not be presented as confirmatory or generalized from a recovery result.

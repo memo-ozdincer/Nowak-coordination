@@ -15,6 +15,8 @@ from nowak_coordination.run_manifest import create_run
 from nowak_coordination.trace_analysis import (
     AnalysisConfig,
     TraceValidationError,
+    _confirmatory_decision,
+    _confirmatory_rows,
     analyze,
     brier_decomposition,
     episode_metrics,
@@ -27,15 +29,17 @@ from nowak_coordination.trace_analysis import (
 PROJECT = Path(__file__).parents[1]
 FIXTURE = PROJECT / "analysis/fixtures/synthetic_traces.jsonl"
 TABLE_SNAPSHOTS = {
-    "aggregates.csv": "04309fd19251c11bb667ab5967852db279708ec93b5530af55bb61afbb478206",
-    "analysis_manifest.json": "9121b192dcc424c41db0df607d7a3c6e958fba0876c55bfdc10ae73e3431f6ed",
-    "bootstrap.csv": "0eb3da389363c82f6ccf7023e7b55e3695594d5739e32640fa6b61b1df64fb61",
-    "confirmatory.csv": "d9049e3de13c3dc6065795d3f7f8502326ded36930cc198be43d86aac922bd51",
-    "episodes.csv": "1af420abe6d4a9aee3f9e6386ea1b1991d1f451f3d3e3cae7f7f38dc2d23c496",
-    "forecast_skill.csv": "9e210dcfe25687a045ab9c262a4cbb49bb79e1dad1847cba17a64bdd9a7eebe6",
-    "hkb_stress.csv": "90d65851053faeb440ec8f6a9e4f57d367dfadd281fc9c39717c9af3b7dcda59",
-    "rounds.csv": "d178ceaf466eae949b6a604b8da49253dc5fbaf4ac45d79a18a6786b11855ad4",
-    "sensitivities.csv": "4c7fe595f846a272c9d6dc6ee0b7235a2b9f2b6635b22c36dfb4963bbd2aea96",
+    "aggregates.csv": "7af7c5742fcea1733c0688ad4cc0d5d7657b7346ef2ef482cfde57ba65d45c9a",
+    "analysis_manifest.json": "2e40fe8a683192ad7e7b9dda8b104b6c549983d5a6c5c3ea4aec9d761fcb49eb",
+    "bootstrap.csv": "f5b966f5d483451e79ab989c1e76421c136257ae7d3af513008a2abd6dfa889c",
+    "confirmatory.csv": "75c6564bfdef348d890da6bd3b267e311ac766fd5ad425a36ddef0dc6653577b",
+    "confirmatory_decision.json": "3a5ad2f4a5f7f9fd99cc5134d104ae81e000646eb5a060c1b1bd9b7d96bddc9b",
+    "diagnostic_cells.csv": "18eed7720b0ac9d0e15baf4df62c1b73180d90f9fd9699780aeb58d0c6f003a0",
+    "episodes.csv": "8ff0414eeda065177f372f0762f133b18b624485246cf730707aaf2906bfc46e",
+    "forecast_skill.csv": "56182c6644960591e5a48749059b55307b1005dd7d744beda3948afddd64f808",
+    "hkb_stress.csv": "534e4aca65356bfea7ede5da242f1c25c6866278d6c27ca8ec6d37252eb9b62d",
+    "rounds.csv": "d7f96cd15095ff16c1ee57c1c0685063a0ab1da3040d651444621c47f284f839",
+    "sensitivities.csv": "fbc90ae0f4a6429988249dd85df5fb2e2e02e42cf382e2328419e541d626021a",
     "validation.json": "75d87529c646a42916ac35950ec99433a8e36b96c7978af11ccbe32357247201",
 }
 
@@ -99,6 +103,18 @@ def test_committed_table_snapshots() -> None:
             ),
             "missing complete terminal event",
         ),
+        (
+            lambda records: records[0]["info"]["coordination_trace"]["rounds"][0].update(
+                joint_outcomes=["DD"]
+            ),
+            "outcome/action mismatch",
+        ),
+        (
+            lambda records: records[0]["info"]["coordination_trace"]["rounds"][0].update(
+                focal_payoff=999
+            ),
+            "focal payoff mismatch",
+        ),
     ],
 )
 def test_validator_rejects_corruption(mutation, message: str) -> None:
@@ -111,7 +127,12 @@ def test_validator_rejects_corruption(mutation, message: str) -> None:
 def test_validator_rejects_seed_leakage() -> None:
     records = deepcopy(load_jsonl(FIXTURE))
     second = records[1]["info"]["coordination_trace"]["trace_header"]["seed_metadata"]
-    second.update(role="validation", training_seed=None, evaluation_seed=2101)
+    second.update(
+        role="validation",
+        training_seed=None,
+        evaluation_seed=2101,
+        checkpoint_training_seed=1102,
+    )
     second["episode_seed"] = records[0]["info"]["coordination_trace"]["trace_header"][
         "seed_metadata"
     ]["episode_seed"]
@@ -147,31 +168,201 @@ def test_analyzer_is_byte_deterministic_and_emits_every_table(tmp_path: Path) ->
         "episodes.csv",
         "rounds.csv",
         "aggregates.csv",
+        "diagnostic_cells.csv",
         "sensitivities.csv",
         "forecast_skill.csv",
         "bootstrap.csv",
         "hkb_stress.csv",
         "confirmatory.csv",
+        "confirmatory_decision.json",
         "analysis_manifest.json",
     }
     for name in first:
         assert first[name].read_bytes() == second[name].read_bytes()
     with first["confirmatory.csv"].open(newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) == 33
-    assert {row["status"] for row in rows} == {
-        "ESTIMATED",
-        "INSUFFICIENT_REPLICATION",
-        "UNAVAILABLE",
+    assert len(rows) == 6
+    assert {row["status"] for row in rows} == {"UNAVAILABLE"}
+    diagnostics = list(csv.DictReader(first["diagnostic_cells.csv"].open(newline="")))
+    assert diagnostics
+    assert all(
+        row["partner_adaptivity"] in {"adaptive", "nonadaptive", "mixed"} for row in diagnostics
+    )
+    assert json.loads(first["confirmatory_decision.json"].read_text())["status"] == (
+        "NOT_EVALUABLE"
+    )
+
+
+def test_incomplete_primary_cohort_cannot_pass(tmp_path: Path) -> None:
+    source = {}
+    for record in load_jsonl(FIXTURE):
+        source.setdefault(episode_metrics(record)["model"], record)
+    seed_sets = {
+        "A": range(1101, 1106),
+        "B": range(1201, 1206),
+        "E": range(1501, 1506),
     }
-    assert all(row["holm_p"] for row in rows if row["status"] == "ESTIMATED")
+    records = []
+    ordinal = 0
+    for model, seeds in seed_sets.items():
+        for seed in seeds:
+            ordinal += 1
+            record = deepcopy(source[model])
+            trace_id = f"primary-{ordinal:02d}"
+            episode_id = f"primary-{model}-{seed}"
+            record["id"] = trace_id
+            record["analysis_targets"]["suite"] = "recovery"
+            record["task"]["data"]["episode"].update(
+                b=3.0,
+                c=1.0,
+                w=1.0,
+                q=0.0,
+                noise_rate=0.0,
+            )
+            state = record["info"]["coordination_trace"]
+            header = state["trace_header"]
+            header["episode_id"] = episode_id
+            header["mode"] = "dyadic"
+            header["policy_split"] = "heldout"
+            header["sampling_metadata"] = {
+                "temperature": 0.7,
+                "top_p": 1.0,
+                "enable_thinking": False,
+                "requested_seed": 200_000 + ordinal,
+            }
+            header["seed_metadata"].update(
+                role="test",
+                training_seed=None,
+                evaluation_seed=3101 + ((ordinal - 1) % 5),
+                checkpoint_training_seed=seed,
+                episode_seed=200_000 + ordinal,
+            )
+            state["terminal_event"]["episode_id"] = episode_id
+            for event in state["rounds"]:
+                event["episode_id"] = episode_id
+                event["partner_policy"] = "generous_tit_for_tat"
+                event["partner_adaptive"] = True
+                if event["round_index"] == 5:
+                    event["partner_intended_actions"] = ["C"]
+            if model == "B":
+                perturbed = state["rounds"][4]
+                perturbed.update(
+                    focal_intended_action="C",
+                    focal_executed_action="C",
+                    joint_outcomes=["CD"],
+                )
+            for event in state["rounds"]:
+                payoff = 3.0 * (event["partner_executed_actions"] == ["C"]) - (
+                    event["focal_executed_action"] == "C"
+                )
+                event["focal_payoff"] = payoff
+                event["reward"].update(payoff=payoff, total=payoff)
+            mean_payoff = sum(event["focal_payoff"] for event in state["rounds"]) / 10
+            record["analysis_targets"]["safe_defect_mean_payoff"] = mean_payoff - 0.25
+            record["analysis_targets"]["oracle_mean_payoff"] = mean_payoff + 0.5
+            records.append(record)
+    for source_record in list(records):
+        model = source_record["info"]["coordination_trace"]["trace_header"]["reward_model"]
+        if model not in {"A", "B"}:
+            continue
+        ordinal += 1
+        record = deepcopy(source_record)
+        state = record["info"]["coordination_trace"]
+        episode_id = f"exploit-{model}-{ordinal}"
+        record["id"] = f"exploit-{ordinal:02d}"
+        record["analysis_targets"]["suite"] = "exploitability"
+        state["trace_header"]["episode_id"] = episode_id
+        state["trace_header"]["seed_metadata"]["episode_seed"] = 300_000 + ordinal
+        state["terminal_event"]["episode_id"] = episode_id
+        for event in state["rounds"]:
+            event["episode_id"] = episode_id
+            event["partner_policy"] = "opportunist"
+            event["partner_adaptive"] = True
+        records.append(record)
+    paths = analyze(
+        records,
+        tmp_path,
+        AnalysisConfig(bootstrap_iterations=100, permutation_iterations=10_000),
+    )
+    rows = list(csv.DictReader(paths["confirmatory.csv"].open(newline="")))
+    efficacy = [row for row in rows if row["family"] == "efficacy"]
+    safety = [row for row in rows if row["family"] == "safety"]
+    assert [float(row["raw_p"]) for row in efficacy] == pytest.approx([2 / 252, 2 / 252])
+    assert [float(row["holm_p"]) for row in efficacy] == pytest.approx([4 / 252, 4 / 252])
+    assert all(float(row["ci_lower"]) > 0 for row in efficacy)
+    assert {row["decision"] for row in safety} == {"", "PASS"}
+    decision = json.loads(paths["confirmatory_decision.json"].read_text())
+    assert decision["status"] == "NOT_EVALUABLE"
+    assert decision["reason"] == "confirmatory cohort contract failed"
+
+
+def test_exact_complete_primary_cohort_can_reach_registered_pass() -> None:
+    episodes = []
+    for model, seeds, recovery in (
+        ("A", range(1101, 1106), 0.0),
+        ("B", range(1201, 1206), 1.0),
+        ("E", range(1501, 1506), 0.0),
+    ):
+        for training_seed in seeds:
+            for evaluation_seed in range(3101, 3106):
+                for _ in range(20):
+                    episodes.append(
+                        {
+                            "model": model,
+                            "training_seed": training_seed,
+                            "evaluation_seed": evaluation_seed,
+                            "suite": "recovery",
+                            "partner_policy": "generous_tit_for_tat",
+                            "lock_type": "CC",
+                            "recovered_within_3": recovery,
+                            "p_dd": 0.0,
+                            "format_valid": 1.0,
+                        }
+                    )
+    for model, seeds in (("A", range(1101, 1106)), ("B", range(1201, 1206))):
+        for training_seed in seeds:
+            for evaluation_seed in range(3101, 3106):
+                for policy in ("always_defect", "opportunist"):
+                    for _ in range(10):
+                        episodes.append(
+                            {
+                                "model": model,
+                                "training_seed": training_seed,
+                                "evaluation_seed": evaluation_seed,
+                                "suite": "exploitability",
+                                "partner_policy": policy,
+                                "lock_type": "DD",
+                                "nonexploitability_vs_safe_defect": 0.0,
+                            }
+                        )
+    config = AnalysisConfig(bootstrap_iterations=100, permutation_iterations=1)
+    rows = _confirmatory_rows(episodes, config)
+    efficacy = [row for row in rows if row["family"] == "efficacy"]
+    assert {row["permutation_method"] for row in efficacy} == {"exact_252_assignments"}
+    assert [row["raw_p"] for row in efficacy] == pytest.approx([2 / 252, 2 / 252])
+    assert _confirmatory_decision(rows, episodes)["status"] == "PASS"
+
+    harmed = deepcopy(episodes)
+    for row in harmed:
+        if (
+            row["model"] == "B"
+            and row["suite"] == "exploitability"
+            and row["partner_policy"] == "opportunist"
+        ):
+            row["nonexploitability_vs_safe_defect"] = -1.0
+    harmed_rows = _confirmatory_rows(harmed, config)
+    opportunist = next(row for row in harmed_rows if row.get("partner_policy") == "opportunist")
+    always_defect = next(row for row in harmed_rows if row.get("partner_policy") == "always_defect")
+    assert opportunist["decision"] == "FAIL"
+    assert always_defect["decision"] == "PASS"
+    assert _confirmatory_decision(harmed_rows, harmed)["status"] == "FAIL"
 
 
 def test_analyzer_uses_evaluation_seeds_as_base_replications(tmp_path: Path) -> None:
     records = deepcopy(load_jsonl(FIXTURE)[:2])
     for index, record in enumerate(records):
         header = record["info"]["coordination_trace"]["trace_header"]
-        header["reward_model"] = "Base"
+        header["policy_arm"] = "Base"
         header["policy_split"] = "heldout"
         header["seed_metadata"].update(
             role="test",
@@ -186,7 +377,8 @@ def test_analyzer_uses_evaluation_seeds_as_base_replications(tmp_path: Path) -> 
     bootstrap = list(csv.DictReader(paths["bootstrap.csv"].open(newline="")))
     assert bootstrap
     assert {row["replication_kind"] for row in bootstrap} == {"evaluation_seed"}
-    assert {row["replication_units"] for row in bootstrap} == {"2"}
+    assert {row["replication_units"] for row in bootstrap} == {"1"}
+    assert {row["suite"] for row in bootstrap} == {"repeated_2x2", "hkb_lock"}
 
 
 def test_analyzer_handles_all_invalid_format_traces(tmp_path: Path) -> None:
@@ -216,6 +408,7 @@ def test_run_manifest_success_failure_and_overwrite_refusal(tmp_path: Path) -> N
         "run_id": "fixed",
         "analysis_spec": PROJECT / "docs/ANALYSIS_SPEC.md",
         "seed_role": "training",
+        "model_arm": "A",
         "training_seed": 1101,
     }
     run_dir = create_run(command=[sys.executable, "-c", "print('ok')"], **common)

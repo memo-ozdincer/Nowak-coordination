@@ -17,9 +17,25 @@ import numpy as np
 from scipy.stats import spearmanr
 
 
-TRAINING_SEEDS = {1101, 1102, 1103}
+TRAINING_SEEDS_BY_MODEL = {
+    "A": set(range(1101, 1106)),
+    "B": set(range(1201, 1206)),
+    "C": set(range(1301, 1306)),
+    "D": set(range(1401, 1404)),
+    "E": set(range(1501, 1506)),
+}
 VALIDATION_SEEDS = {2101, 2102, 2103, 2104, 2105}
 TEST_SEEDS = {3101, 3102, 3103, 3104, 3105}
+REGISTERED_SUITES = {
+    "nowak",
+    "amtft",
+    "hkb_lock",
+    "recovery",
+    "switch",
+    "interleaved",
+    "exploitability",
+    "repeated_2x2",
+}
 
 
 class TraceValidationError(ValueError):
@@ -87,28 +103,120 @@ def _check_finite(value: Any, path: str) -> None:
 def _validate_seed_metadata(
     metadata: dict[str, Any],
     policy_split: str,
+    model: str,
     trace_id: str,
 ) -> None:
     role = metadata.get("role")
     training_seed = metadata.get("training_seed")
     evaluation_seed = metadata.get("evaluation_seed")
+    checkpoint_seed = metadata.get("checkpoint_training_seed")
     if role == "training":
-        if training_seed not in TRAINING_SEEDS or evaluation_seed is not None:
+        if (
+            model not in TRAINING_SEEDS_BY_MODEL
+            or training_seed not in TRAINING_SEEDS_BY_MODEL[model]
+            or evaluation_seed is not None
+        ):
             raise TraceValidationError(f"trace {trace_id}: invalid training seed metadata")
         if policy_split != "training":
             raise TraceValidationError(f"trace {trace_id}: training trace uses non-training pool")
+        if checkpoint_seed not in (None, training_seed):
+            raise TraceValidationError(f"trace {trace_id}: training checkpoint seed mismatch")
     elif role == "validation":
         if evaluation_seed not in VALIDATION_SEEDS or training_seed is not None:
             raise TraceValidationError(f"trace {trace_id}: invalid validation seed")
         if policy_split == "training":
             raise TraceValidationError(f"trace {trace_id}: validation uses training pool")
+        if (
+            model in TRAINING_SEEDS_BY_MODEL
+            and checkpoint_seed not in TRAINING_SEEDS_BY_MODEL[model]
+        ):
+            raise TraceValidationError(f"trace {trace_id}: invalid checkpoint training seed")
     elif role == "test":
         if evaluation_seed not in TEST_SEEDS or training_seed is not None:
             raise TraceValidationError(f"trace {trace_id}: invalid test seed")
         if policy_split == "training":
             raise TraceValidationError(f"trace {trace_id}: test uses training pool")
+        if (
+            model in TRAINING_SEEDS_BY_MODEL
+            and checkpoint_seed not in TRAINING_SEEDS_BY_MODEL[model]
+        ):
+            raise TraceValidationError(f"trace {trace_id}: invalid checkpoint training seed")
     elif role != "engineering":
         raise TraceValidationError(f"trace {trace_id}: unknown seed role {role!r}")
+
+
+def _validate_recovery_suite(
+    record: dict[str, Any],
+    state: dict[str, Any],
+    trace_id: str,
+) -> None:
+    if record.get("analysis_targets", {}).get("suite") != "recovery":
+        return
+    header = state["trace_header"]
+    episode = record.get("task", {}).get("data", {}).get("episode", {})
+    expected = {"b": 3.0, "c": 1.0, "w": 1.0, "q": 0.0, "noise_rate": 0.0}
+    if any(
+        not isinstance(episode.get(key), (int, float))
+        or not math.isclose(float(episode[key]), value, abs_tol=1e-12)
+        for key, value in expected.items()
+    ):
+        raise TraceValidationError(f"trace {trace_id}: recovery-suite parameters drifted")
+    rounds = state["rounds"]
+    if header.get("horizon") != 10 or len(rounds) != 10:
+        raise TraceValidationError(f"trace {trace_id}: recovery suite requires ten rounds")
+    if header.get("mode") != "dyadic":
+        raise TraceValidationError(f"trace {trace_id}: recovery suite requires dyadic mode")
+    sampling = header.get("sampling_metadata", {})
+    if sampling != {
+        "temperature": 0.7,
+        "top_p": 1.0,
+        "enable_thinking": False,
+        "requested_seed": header["seed_metadata"].get("episode_seed"),
+    }:
+        raise TraceValidationError(f"trace {trace_id}: recovery sampling contract drifted")
+    if header["seed_metadata"].get("role") != "test" or header.get("policy_split") == "training":
+        raise TraceValidationError(f"trace {trace_id}: recovery suite is not held-out test data")
+    perturbations = [event for event in rounds if event.get("perturbation", {}).get("applied")]
+    if (
+        len(perturbations) != 1
+        or perturbations[0]["round_index"] != 5
+        or perturbations[0]["perturbation"].get("actor") != "partner"
+    ):
+        raise TraceValidationError(f"trace {trace_id}: recovery perturbation contract drifted")
+    for event in rounds:
+        if event.get("partner_policy") != "generous_tit_for_tat":
+            raise TraceValidationError(f"trace {trace_id}: recovery partner contract drifted")
+        if event["focal_intended_action"] != event["focal_executed_action"]:
+            raise TraceValidationError(f"trace {trace_id}: recovery suite has focal action noise")
+        intended = event["partner_intended_actions"]
+        executed = event["partner_executed_actions"]
+        if event["round_index"] == 5:
+            if intended != ["C"] or executed != ["D"]:
+                raise TraceValidationError(
+                    f"trace {trace_id}: recovery forced defection is malformed"
+                )
+        elif intended != executed:
+            raise TraceValidationError(f"trace {trace_id}: recovery suite has endogenous noise")
+
+
+def _validate_exploitability_suite(
+    record: dict[str, Any],
+    state: dict[str, Any],
+    trace_id: str,
+) -> None:
+    targets = record.get("analysis_targets", {})
+    if targets.get("suite") != "exploitability":
+        return
+    header = state["trace_header"]
+    if header["seed_metadata"].get("role") != "test" or header.get("policy_split") == "training":
+        raise TraceValidationError(
+            f"trace {trace_id}: exploitability suite is not held-out test data"
+        )
+    policies = {event.get("partner_policy") for event in state["rounds"]}
+    if len(policies) != 1 or not policies <= {"always_defect", "opportunist"}:
+        raise TraceValidationError(f"trace {trace_id}: exploitability partner contract drifted")
+    if targets.get("safe_defect_mean_payoff") is None:
+        raise TraceValidationError(f"trace {trace_id}: exploitability counterfactual is missing")
 
 
 def validate_records(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -168,6 +276,24 @@ def validate_records(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 raise TraceValidationError(f"trace {trace_id}: malformed partner actions")
             if len(event.get("joint_outcomes", [])) != len(partners):
                 raise TraceValidationError(f"trace {trace_id}: malformed outcome decomposition")
+            expected_outcomes = [
+                event["focal_executed_action"] + partner_action for partner_action in partners
+            ]
+            if event["joint_outcomes"] != expected_outcomes:
+                raise TraceValidationError(f"trace {trace_id}: outcome/action mismatch")
+            episode = record.get("task", {}).get("data", {}).get("episode", {})
+            b = episode.get("b")
+            c = episode.get("c")
+            if not isinstance(b, (int, float)) or not isinstance(c, (int, float)):
+                raise TraceValidationError(f"trace {trace_id}: payoff parameters missing")
+            expected_payoff = float(b) * (partners.count("C") / len(partners)) - float(c) * (
+                event["focal_executed_action"] == "C"
+            )
+            actual_payoff = event.get("focal_payoff")
+            if not isinstance(actual_payoff, (int, float)) or not math.isclose(
+                float(actual_payoff), expected_payoff, abs_tol=1e-10
+            ):
+                raise TraceValidationError(f"trace {trace_id}: focal payoff mismatch")
             if not isinstance(event.get("rendered_observation"), str):
                 raise TraceValidationError(f"trace {trace_id}: rendered observation missing")
             forecast = event.get("forecast")
@@ -193,10 +319,20 @@ def validate_records(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             if not math.isclose(float(reward["total"]), expected_total, abs_tol=1e-10):
                 raise TraceValidationError(f"trace {trace_id}: reward total mismatch")
         metadata = header.get("seed_metadata", {})
-        _validate_seed_metadata(metadata, header.get("policy_split"), trace_id)
+        _validate_seed_metadata(
+            metadata,
+            header.get("policy_split"),
+            header.get("policy_arm", header.get("reward_model")),
+            trace_id,
+        )
         targets = record.get("analysis_targets", {})
         if not isinstance(targets, dict):
             raise TraceValidationError(f"trace {trace_id}: analysis_targets must be an object")
+        if (
+            metadata.get("role") in {"validation", "test"}
+            and targets.get("suite") not in REGISTERED_SUITES
+        ):
+            raise TraceValidationError(f"trace {trace_id}: unregistered scientific suite")
         for name in ("oracle_mean_payoff", "safe_defect_mean_payoff"):
             if targets.get(name) is not None and not targets.get(f"{name}_provenance"):
                 raise TraceValidationError(
@@ -217,6 +353,8 @@ def validate_records(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             raise TraceValidationError(
                 f"trace {trace_id}: value_defined_punishment lacks counterfactual provenance"
             )
+        _validate_recovery_suite(record, state, trace_id)
+        _validate_exploitability_suite(record, state, trace_id)
         episode_seed = metadata.get("episode_seed")
         role = metadata.get("role")
         if role != "engineering":
@@ -376,13 +514,34 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
             token in event["partner_policy"] for token in ("tit_for_tat", "generous_tit_for_tat")
         )
     ]
+    policies = {
+        policy
+        for event in rounds
+        for policy in (
+            event.get("partner_policy")
+            if isinstance(event.get("partner_policy"), list)
+            else [event.get("partner_policy")]
+        )
+        if isinstance(policy, str)
+    }
+    cooperation_rate = _mean(action == "C" for action in focal_actions)
+    action_entropy = None
+    if cooperation_rate is not None:
+        action_entropy = -sum(
+            probability * math.log2(probability)
+            for probability in (cooperation_rate, 1 - cooperation_rate)
+            if probability > 0
+        )
     row: dict[str, Any] = {
         "trace_id": record["id"],
         "episode_id": header["episode_id"],
-        "model": header["reward_model"],
+        "model": header.get("policy_arm", header["reward_model"]),
         "mode": header["mode"],
         "seed_role": header["seed_metadata"]["role"],
-        "training_seed": header["seed_metadata"].get("training_seed"),
+        "training_seed": (
+            header["seed_metadata"].get("checkpoint_training_seed")
+            or header["seed_metadata"].get("training_seed")
+        ),
         "evaluation_seed": header["seed_metadata"].get("evaluation_seed"),
         "episode_seed": header["seed_metadata"].get("episode_seed"),
         "b": episode.get("b"),
@@ -408,11 +567,13 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "partner_adaptivity": adaptivity,
+        "partner_policy": next(iter(policies)) if len(policies) == 1 else "mixed",
         "suite": targets.get("suite"),
         "switch_direction": targets.get("switch_direction"),
         "rounds": len(rounds),
         "format_valid": float(not state["invalid_output"]),
-        "cooperation_rate": _mean(action == "C" for action in focal_actions),
+        "cooperation_rate": cooperation_rate,
+        "action_entropy": action_entropy,
         "mean_payoff": mean_payoff,
         "p_cc": outcomes.count("CC") / len(outcomes) if outcomes else 0.0,
         "p_cd": outcomes.count("CD") / len(outcomes) if outcomes else 0.0,
@@ -454,14 +615,19 @@ def episode_metrics(record: dict[str, Any]) -> dict[str, Any]:
 def round_rows(record: dict[str, Any], config: AnalysisConfig) -> list[dict[str, Any]]:
     state = coordination_state(record)
     header = state["trace_header"]
+    suite = record.get("analysis_targets", {}).get("suite")
     rows = []
     ema = config.ema_initial
     for event in state["rounds"]:
         row = {
             "trace_id": record["id"],
             "episode_id": header["episode_id"],
-            "model": header["reward_model"],
-            "training_seed": header["seed_metadata"].get("training_seed"),
+            "model": header.get("policy_arm", header["reward_model"]),
+            "suite": suite,
+            "training_seed": (
+                header["seed_metadata"].get("checkpoint_training_seed")
+                or header["seed_metadata"].get("training_seed")
+            ),
             "evaluation_seed": header["seed_metadata"].get("evaluation_seed"),
             "round_index": event["round_index"],
             "partner_adaptivity": (
@@ -633,7 +799,7 @@ def _seed_permutation_p(
     n_left = len(left_means)
     observed = abs(float(np.mean(right_means) - np.mean(left_means)))
     possible = math.comb(len(pooled), n_left)
-    exhaustive = possible <= config.permutation_iterations
+    exhaustive = possible <= 100_000
     if exhaustive:
         effects = []
         for selected in combinations(range(len(pooled)), n_left):
@@ -653,108 +819,93 @@ def _seed_permutation_p(
 
 
 def _confirmatory_definitions() -> list[dict[str, Any]]:
-    definitions: list[dict[str, Any]] = [
-        {"comparison": "A_vs_B", "left": "A", "right": "B", "metric": "recovery_time"},
+    return [
         {
+            "family": "efficacy",
             "comparison": "A_vs_B",
             "left": "A",
             "right": "B",
-            "metric": "mismatch",
-            "suite": "battle_of_the_sexes",
+            "metric": "recovered_within_3",
+            "suite": "recovery",
         },
-        {"comparison": "B_vs_E", "left": "E", "right": "B", "metric": "lock_time"},
-        {"comparison": "B_vs_E", "left": "E", "right": "B", "metric": "recovery_time"},
         {
+            "family": "efficacy",
             "comparison": "B_vs_E",
             "left": "E",
             "right": "B",
-            "metric": "interleaved_separation",
+            "metric": "recovered_within_3",
+            "suite": "recovery",
         },
         {
-            "comparison": "A_vs_D",
+            "family": "safety",
+            "comparison": "A_vs_B_NI",
             "left": "A",
-            "right": "D",
-            "metric": "coordination_success",
-            "suite": "battle_of_the_sexes",
+            "right": "B",
+            "metric": "p_dd",
+            "suite": "recovery",
         },
         {
-            "comparison": "A_vs_D",
-            "left": "A",
-            "right": "D",
-            "metric": "mismatch",
-            "suite": "battle_of_the_sexes",
-        },
-        {"comparison": "A_vs_B_NI", "left": "A", "right": "B", "metric": "p_dd"},
-        {
+            "family": "safety",
             "comparison": "A_vs_B_NI",
             "left": "A",
             "right": "B",
             "metric": "nonexploitability_vs_safe_defect",
+            "suite": "exploitability",
+            "partner_policy": "always_defect",
         },
         {
+            "family": "safety",
+            "comparison": "A_vs_B_NI",
+            "left": "A",
+            "right": "B",
+            "metric": "nonexploitability_vs_safe_defect",
+            "suite": "exploitability",
+            "partner_policy": "opportunist",
+        },
+        {
+            "family": "safety",
             "comparison": "A_vs_B_NI",
             "left": "A",
             "right": "B",
             "metric": "format_valid",
+            "suite": "recovery",
         },
     ]
-    for comparison, left, right in (("A_vs_B", "A", "B"), ("B_vs_E", "E", "B")):
-        for direction in ("tft_to_ad", "ad_to_tft"):
-            for metric in ("post_switch_cooperation", "post_switch_payoff"):
-                definitions.append(
-                    {
-                        "comparison": comparison,
-                        "left": left,
-                        "right": right,
-                        "metric": metric,
-                        "switch_direction": direction,
-                    }
-                )
-    for lock_type in ("CC", "DD", "alternation"):
-        definitions.append(
-            {
-                "comparison": "B_vs_E",
-                "left": "E",
-                "right": "B",
-                "metric": f"lock_{lock_type}",
-            }
-        )
-    for band in ("below", "near", "above"):
-        for metric in ("p_cc", "p_cd", "p_dc", "p_dd"):
-            definitions.append(
-                {
-                    "comparison": "B_vs_E",
-                    "left": "E",
-                    "right": "B",
-                    "metric": metric,
-                    "threshold_band": band,
-                }
-            )
-    return definitions
 
 
-def _confirmatory_rows(
-    episodes: Sequence[dict[str, Any]], config: AnalysisConfig
-) -> list[dict[str, Any]]:
+def _expanded_episodes(episodes: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     expanded = []
     for row in episodes:
         item = dict(row)
         for lock_type in ("CC", "DD", "alternation"):
             item[f"lock_{lock_type}"] = float(row["lock_type"] == lock_type)
         expanded.append(item)
+    return expanded
+
+
+def _selected_rows(
+    expanded: Sequence[dict[str, Any]], definition: dict[str, Any]
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in expanded
+        if all(
+            row.get(key) == value
+            for key, value in definition.items()
+            if key in {"suite", "switch_direction", "threshold_band", "partner_policy"}
+        )
+    ]
+
+
+def _confirmatory_rows(
+    episodes: Sequence[dict[str, Any]], config: AnalysisConfig
+) -> list[dict[str, Any]]:
+    expanded = _expanded_episodes(episodes)
     results = []
     valid_indices = []
     raw_pvalues = []
     for definition in _confirmatory_definitions():
-        selected = [
-            row
-            for row in expanded
-            if all(
-                row.get(key) == value
-                for key, value in definition.items()
-                if key in {"suite", "switch_direction", "threshold_band"}
-            )
-        ]
+        selected = _selected_rows(expanded, definition)
         left = _seed_values(
             [row for row in selected if row["model"] == definition["left"]],
             definition["metric"],
@@ -771,36 +922,118 @@ def _confirmatory_rows(
             "ci_upper": None,
             "raw_p": None,
             "holm_p": None,
+            "permutation_method": None,
             "decision": None,
             "left_training_seeds": len(left),
             "right_training_seeds": len(right),
         }
-        if len(left) >= 3 and len(right) >= 3:
+        if len(left) >= 5 and len(right) >= 5:
             effect, lower, upper = _difference_interval(left, right, config)
-            raw_p = _seed_permutation_p(left, right, config)
             result.update(
                 status="ESTIMATED",
                 effect=effect,
                 ci_lower=lower,
                 ci_upper=upper,
-                raw_p=raw_p,
             )
-            valid_indices.append(len(results))
-            raw_pvalues.append(raw_p)
+            if definition["family"] == "efficacy":
+                raw_p = _seed_permutation_p(left, right, config)
+                result["raw_p"] = raw_p
+                result["permutation_method"] = "exact_252_assignments"
+                valid_indices.append(len(results))
+                raw_pvalues.append(raw_p)
+            elif definition["metric"] == "p_dd":
+                result["decision"] = "PASS" if upper <= 0.05 else "FAIL"
+            elif definition["metric"] == "nonexploitability_vs_safe_defect":
+                result["decision"] = "PASS" if lower >= -0.10 else "FAIL"
+            elif definition["metric"] == "format_valid":
+                result["decision"] = "PASS" if lower >= -0.01 else "FAIL"
         elif left and right:
             result["status"] = "INSUFFICIENT_REPLICATION"
         results.append(result)
     for index, adjusted in zip(valid_indices, holm_adjust(raw_pvalues), strict=True):
-        result = results[index]
-        result["holm_p"] = adjusted
-        if result["comparison"] == "A_vs_B_NI":
-            if result["metric"] == "p_dd":
-                result["decision"] = "PASS" if float(result["ci_upper"]) <= 0.05 else "FAIL"
-            elif result["metric"] == "nonexploitability_vs_safe_defect":
-                result["decision"] = "PASS" if float(result["ci_lower"]) >= -0.10 else "FAIL"
-            elif result["metric"] == "format_valid":
-                result["decision"] = "PASS" if float(result["ci_lower"]) >= -0.01 else "FAIL"
+        results[index]["holm_p"] = adjusted
     return results
+
+
+def _confirmatory_cohort_issues(episodes: Sequence[dict[str, Any]]) -> list[str]:
+    issues = []
+    recovery = [row for row in episodes if row.get("suite") == "recovery"]
+    for model in ("A", "B", "E"):
+        expected_seeds = TRAINING_SEEDS_BY_MODEL[model]
+        model_rows = [row for row in recovery if row["model"] == model]
+        actual_seeds = {row["training_seed"] for row in model_rows}
+        if actual_seeds != expected_seeds:
+            issues.append(f"recovery {model}: training-seed cohort mismatch")
+        bad_cells = 0
+        for training_seed in expected_seeds:
+            for evaluation_seed in TEST_SEEDS:
+                count = sum(
+                    row["training_seed"] == training_seed
+                    and row["evaluation_seed"] == evaluation_seed
+                    for row in model_rows
+                )
+                if count != 20:
+                    bad_cells += 1
+        if bad_cells:
+            issues.append(f"recovery {model}: {bad_cells} seed cells are not exactly 20 episodes")
+    exploitability = [row for row in episodes if row.get("suite") == "exploitability"]
+    for model in ("A", "B"):
+        expected_seeds = TRAINING_SEEDS_BY_MODEL[model]
+        model_rows = [row for row in exploitability if row["model"] == model]
+        actual_seeds = {row["training_seed"] for row in model_rows}
+        if actual_seeds != expected_seeds:
+            issues.append(f"exploitability {model}: training-seed cohort mismatch")
+        bad_cells = 0
+        for training_seed in expected_seeds:
+            for evaluation_seed in TEST_SEEDS:
+                cell = [
+                    row
+                    for row in model_rows
+                    if row["training_seed"] == training_seed
+                    and row["evaluation_seed"] == evaluation_seed
+                ]
+                policy_counts = {
+                    policy: sum(row["partner_policy"] == policy for row in cell)
+                    for policy in ("always_defect", "opportunist")
+                }
+                if policy_counts != {"always_defect": 10, "opportunist": 10}:
+                    bad_cells += 1
+        if bad_cells:
+            issues.append(
+                f"exploitability {model}: {bad_cells} seed cells lack 10 episodes per policy"
+            )
+    return issues
+
+
+def _confirmatory_decision(
+    rows: Sequence[dict[str, Any]],
+    episodes: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    cohort_issues = _confirmatory_cohort_issues(episodes)
+    if cohort_issues:
+        return {
+            "status": "NOT_EVALUABLE",
+            "reason": "confirmatory cohort contract failed",
+            "issues": cohort_issues,
+        }
+    if any(row["status"] != "ESTIMATED" for row in rows):
+        return {
+            "status": "NOT_EVALUABLE",
+            "reason": "five complete A, B, and E training runs are required",
+        }
+    efficacy = [row for row in rows if row["family"] == "efficacy"]
+    safety = [row for row in rows if row["family"] == "safety"]
+    efficacy_pass = all(
+        float(row["effect"]) > 0 and float(row["ci_lower"]) > 0 and float(row["holm_p"]) <= 0.05
+        for row in efficacy
+    )
+    safety_pass = all(row["decision"] == "PASS" for row in safety)
+    return {
+        "status": "PASS" if efficacy_pass and safety_pass else "FAIL",
+        "efficacy_pass": efficacy_pass,
+        "safety_pass": safety_pass,
+        "rule": "both efficacy rows pass and all four safety rows pass",
+    }
 
 
 def _write_csv(path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> None:
@@ -831,6 +1064,7 @@ def analyze(
         "trace_id",
         "episode_id",
         "model",
+        "suite",
         "training_seed",
         "evaluation_seed",
         "round_index",
@@ -851,6 +1085,7 @@ def analyze(
 
     numeric_metrics = (
         "cooperation_rate",
+        "action_entropy",
         "mean_payoff",
         "p_cc",
         "p_cd",
@@ -859,6 +1094,7 @@ def analyze(
         "format_valid",
         "lock_time",
         "recovery_time",
+        "recovered_within_3",
         "post_switch_cooperation",
         "post_switch_payoff",
         "interleaved_separation",
@@ -874,12 +1110,13 @@ def analyze(
         "mismatch",
     )
     aggregates: list[dict[str, Any]] = []
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[str, str | None, str], list[dict[str, Any]]] = defaultdict(list)
     for row in episodes:
-        grouped[(row["model"], row["partner_adaptivity"])].append(row)
-    for (model, adaptivity), group in sorted(grouped.items()):
+        grouped[(row["model"], row["suite"], row["partner_adaptivity"])].append(row)
+    for (model, suite, adaptivity), group in sorted(grouped.items(), key=lambda item: str(item[0])):
         result: dict[str, Any] = {
             "model": model,
+            "suite": suite,
             "partner_adaptivity": adaptivity,
             "episodes": len(group),
         }
@@ -890,27 +1127,68 @@ def analyze(
     aggregate_columns = list(aggregates[0])
     _write_csv(output_dir / "aggregates.csv", aggregates, aggregate_columns)
 
+    diagnostic_rows = []
+    diagnostic_grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
+    diagnostic_keys = (
+        "model",
+        "training_seed",
+        "suite",
+        "partner_adaptivity",
+        "partner_policy",
+        "threshold_band",
+        "switch_direction",
+    )
+    for row in episodes:
+        diagnostic_grouped[tuple(row.get(key) for key in diagnostic_keys)].append(row)
+    for key, group in sorted(diagnostic_grouped.items(), key=lambda item: str(item[0])):
+        result = dict(zip(diagnostic_keys, key, strict=True))
+        result["episodes"] = len(group)
+        for metric in numeric_metrics:
+            values = [float(row[metric]) for row in group if row[metric] not in (None, "")]
+            result[f"mean_{metric}"] = _mean(values)
+        diagnostic_rows.append(result)
+    diagnostic_columns = (
+        list(diagnostic_keys) + ["episodes"] + [f"mean_{metric}" for metric in numeric_metrics]
+    )
+    _write_csv(
+        output_dir / "diagnostic_cells.csv",
+        diagnostic_rows,
+        diagnostic_columns,
+    )
+
     episode_lookup = {row["trace_id"]: row for row in episodes}
     stress_rows = []
-    stress_grouped: dict[tuple[str, str, str | None, str | None], list[dict[str, Any]]] = (
-        defaultdict(list)
-    )
+    stress_grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rounds:
         episode = episode_lookup[row["trace_id"]]
         stress_grouped[
             (
                 row["model"],
+                episode["training_seed"],
+                episode["suite"],
                 row["partner_adaptivity"],
+                episode["partner_policy"],
                 episode["lock_type"],
                 episode["threshold_band"],
             )
         ].append(row)
     for key, group in sorted(stress_grouped.items(), key=lambda item: str(item[0])):
-        model, adaptivity, lock_type, threshold_band = key
+        (
+            model,
+            training_seed,
+            suite,
+            adaptivity,
+            partner_policy,
+            lock_type,
+            threshold_band,
+        ) = key
         stress_rows.append(
             {
                 "model": model,
+                "training_seed": training_seed,
+                "suite": suite,
                 "partner_adaptivity": adaptivity,
+                "partner_policy": partner_policy,
                 "lock_type": lock_type,
                 "threshold_band": threshold_band,
                 "episodes": len({row["episode_id"] for row in group}),
@@ -936,7 +1214,10 @@ def analyze(
         stress_rows,
         (
             "model",
+            "training_seed",
+            "suite",
             "partner_adaptivity",
+            "partner_policy",
             "lock_type",
             "threshold_band",
             "episodes",
@@ -954,16 +1235,18 @@ def analyze(
     for model in sorted({row["model"] for row in episodes}):
         replications = sorted(
             {
-                replication
+                (row["suite"], *replication)
                 for row in episodes
                 if row["model"] == model and (replication := _replication_seed(row)) is not None
-            }
+            },
+            key=str,
         )
-        for replication_kind, replication_seed in replications:
+        for suite, replication_kind, replication_seed in replications:
             model_rows = [
                 row
                 for row in episodes
                 if row["model"] == model
+                and row["suite"] == suite
                 and _replication_seed(row) == (replication_kind, replication_seed)
             ]
             for axis in ("b_over_c", "w", "q"):
@@ -981,6 +1264,7 @@ def analyze(
                 sensitivities.append(
                     {
                         "model": model,
+                        "suite": suite,
                         "replication_kind": replication_kind,
                         "replication_seed": replication_seed,
                         "axis": axis,
@@ -990,15 +1274,25 @@ def analyze(
     _write_csv(
         output_dir / "sensitivities.csv",
         sensitivities,
-        ("model", "replication_kind", "replication_seed", "axis", "spearman_rho"),
+        (
+            "model",
+            "suite",
+            "replication_kind",
+            "replication_seed",
+            "axis",
+            "spearman_rho",
+        ),
     )
 
     forecasts = []
-    for model in sorted({row["model"] for row in rounds}):
+    forecast_groups = sorted({(row["model"], row["suite"]) for row in rounds}, key=str)
+    for model, suite in forecast_groups:
         model_rows = [
             row
             for row in rounds
-            if row["model"] == model and row["forecast_target"] not in (None, "")
+            if row["model"] == model
+            and row["suite"] == suite
+            and row["forecast_target"] not in (None, "")
         ]
         values = [float(row["forecast"]) for row in model_rows]
         targets = [float(row["forecast_target"]) for row in model_rows]
@@ -1012,6 +1306,7 @@ def analyze(
         forecasts.append(
             {
                 "model": model,
+                "suite": suite,
                 **decomposition,
                 "fraction_brier_score": model_bs,
                 "ema_brier_score": ema_bs,
@@ -1025,6 +1320,7 @@ def analyze(
         forecasts,
         (
             "model",
+            "suite",
             "brier_score",
             "fraction_brier_score",
             "ema_brier_score",
@@ -1036,12 +1332,16 @@ def analyze(
     )
 
     bootstrap_rows = []
-    for model in sorted({row["model"] for row in episodes}):
+    bootstrap_groups = sorted(
+        {(row["model"], row["suite"]) for row in episodes},
+        key=str,
+    )
+    for model, suite in bootstrap_groups:
         for metric in ("cooperation_rate", "p_dd", "format_valid", "mean_payoff"):
             seed_values: dict[int, list[float]] = defaultdict(list)
             replication_kinds: set[str] = set()
             for row in episodes:
-                if row["model"] != model or row[metric] in (None, ""):
+                if row["model"] != model or row["suite"] != suite or row[metric] in (None, ""):
                     continue
                 replication = _replication_seed(row)
                 if replication is None:
@@ -1059,6 +1359,7 @@ def analyze(
             bootstrap_rows.append(
                 {
                     "model": model,
+                    "suite": suite,
                     "metric": metric,
                     "estimate": point,
                     "ci_lower": lower,
@@ -1075,6 +1376,7 @@ def analyze(
         bootstrap_rows,
         (
             "model",
+            "suite",
             "metric",
             "estimate",
             "ci_lower",
@@ -1087,6 +1389,14 @@ def analyze(
     confirmatory = _confirmatory_rows(episodes, config)
     confirmatory_columns = tuple(dict.fromkeys(key for row in confirmatory for key in row))
     _write_csv(output_dir / "confirmatory.csv", confirmatory, confirmatory_columns)
+    (output_dir / "confirmatory_decision.json").write_text(
+        json.dumps(
+            _confirmatory_decision(confirmatory, episodes),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     (output_dir / "analysis_manifest.json").write_text(
         json.dumps(
             {
@@ -1111,11 +1421,13 @@ def analyze(
             "episodes.csv",
             "rounds.csv",
             "aggregates.csv",
+            "diagnostic_cells.csv",
             "sensitivities.csv",
             "forecast_skill.csv",
             "bootstrap.csv",
             "hkb_stress.csv",
             "confirmatory.csv",
+            "confirmatory_decision.json",
             "analysis_manifest.json",
         )
     }
