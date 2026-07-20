@@ -159,10 +159,57 @@ EVAL_POLICIES: dict[str, type[PartnerPolicy]] = {
     "copy_with_noise_10%": NoisyTitForTat,
 }
 
+DIAGNOSTIC_POLICIES: dict[str, type[PartnerPolicy]] = {
+    "always_cooperate": AlwaysCooperate,
+    "always_defect": AlwaysDefect,
+    "tit_for_tat": TitForTat,
+    "generous_tit_for_tat": GenerousTitForTat,
+}
 
-def make_partner(name: str, **kwargs: object) -> PartnerPolicy:
+POLICY_REGISTRIES = {
+    "training": TRAINING_POLICIES,
+    "heldout": EVAL_POLICIES,
+    "diagnostic": DIAGNOSTIC_POLICIES,
+}
+
+
+def validate_policy_assignment(name: str, split: str) -> None:
+    """Reject accidental training/evaluation partner leakage at config load."""
+
     try:
-        policy_type = TRAINING_POLICIES.get(name) or EVAL_POLICIES[name]
+        registry = POLICY_REGISTRIES[split]
+    except KeyError as exc:
+        raise ValueError(f"unknown policy split {split!r}") from exc
+    if name not in registry:
+        raise ValueError(f"policy {name!r} is not registered in the {split!r} split")
+
+
+def is_adaptive_policy(name: str) -> bool:
+    return name not in {"always_cooperate", "always_defect", "random_p", "probabilistic_defector"}
+
+
+def partner_decision(
+    policy: PartnerPolicy,
+    history: Sequence[RoundResult],
+    rng: random.Random,
+) -> tuple[Action, Action]:
+    """Return policy intention and post-policy-noise execution separately."""
+
+    if isinstance(policy, NoisyTitForTat):
+        intended = history[-1].agent_action if history else Action.COOPERATE
+        executed = Action(-int(intended)) if rng.random() < policy.noise_rate else intended
+        return intended, executed
+    action = policy.act(history, rng)
+    return action, action
+
+
+def make_partner(name: str, *, split: str | None = None, **kwargs: object) -> PartnerPolicy:
+    if split is not None:
+        validate_policy_assignment(name, split)
+    try:
+        policy_type = (
+            TRAINING_POLICIES.get(name) or EVAL_POLICIES.get(name) or DIAGNOSTIC_POLICIES[name]
+        )
     except KeyError as exc:
         known = sorted(TRAINING_POLICIES.keys() | EVAL_POLICIES.keys())
         raise ValueError(f"unknown partner policy {name!r}; choose from {known}") from exc

@@ -1,6 +1,6 @@
 # Project state and completion path
 
-**Operational source of truth — last audited 2026-07-19**
+**Operational source of truth — last audited 2026-07-20**
 
 This document turns `paper-and-plan/final_plan_v2.md` into a gated execution
 contract. It is deliberately stricter than a task list: later work is blocked
@@ -49,16 +49,16 @@ graph-structured evaluation is added.
 |---|---|---|
 | Research design | **Gate 1 complete** | `docs/ANALYSIS_SPEC.md` v1.2 is independently audited and frozen; environment design is `docs/ENVIRONMENT_SPEC.md` |
 | Project setup | **Working** | `.venv`, PRIME venv, and commands documented in `docs/CLUSTER_RL_RUNBOOK.md` |
-| Core two-player game | **Working, incomplete semantics** | Payoffs, parser, seeded partners, task grid, trace metrics; `w`, reputation visibility, and partner switching are not active mechanics |
-| Reward code | **Unit-tested prototype** | A–D composition, normalized HKB, and Brier term exist; shuffled-HKB E and group/CFE task do not |
-| Tests | **Passing** | `uv run pytest -q` → 37 passed on 2026-07-17 |
+| Core environment | **Gate 2 complete** | Causal `w/q`, opaque identities, per-partner histories, switches, interleaving, action perturbations, group/CFE, naturalistic labels, and complete traces pass semantic tests |
+| Reward code | **Gate 2 complete** | A–E composition, normalized dyadic HKB, shuffled-HKB source exclusion, and genuine group Brier target are unit-tested |
+| Tests | **Passing** | `./.venv/bin/python -m pytest -q` → 56 passed on 2026-07-20; pinned PRIME/Verifiers construction also passes |
 | Live model protocol | **Working** | `results/live_smoke/traces.jsonl`: 3/3 complete; `results/base_grid/traces.jsonl`: 48/48 complete, no trace errors |
 | Base evaluation | **Engineering sample only** | 48 deterministic, three-round episodes; too small/narrow for scientific inference |
 | Training runtime | **Working (Gate 0 passed)** | CUDA 12.9 `nvcc`, pinned Verifiers, selective norm-only checkpointing, and disabled default trainer compilation passed a real vLLM/FlashInfer generation and ten-update pilot; evidence: `docs/GATE0_RUNTIME_EVIDENCE.md` |
 | Model A training | **Feasibility pilot completed; scientific training not started** | `results/gate0/model_a_pilot/20260717T213000Z-6b7c288-s2005` completed 10 updates with a loadable step-10 adapter and full export; it is not a frozen scientific training run |
 | Models B/C/D/E | **Not started** | No frozen training configs or checkpoints |
 | Formal analysis pipeline | **Not started** | No run manifests, trace analyzer, bootstrap tests, tables, or figure builder |
-| Stress/transfer environments | **Not started** | Partner switch, interleaving, forced-noise recovery, group task, and Akata-style 2x2 suite are absent |
+| Stress/transfer environments | **Internal mechanics working; external transfer absent** | Switch, interleaving, forced noise, and group mechanics pass Gate 2; Akata-style 2x2 suite remains Gate 8 |
 | Paper | **Incomplete** | `paper-and-plan/incomplete_paper.pdf`; no result-complete manuscript |
 
 ### What the existing 48-episode sample establishes
@@ -198,29 +198,29 @@ documented reconciliation rounds.
 
 Write `docs/ENVIRONMENT_SPEC.md` first, then implement it.
 
-- [ ] **Direct reciprocity (`w`):** define and implement whether `w` is
+- [x] **Direct reciprocity (`w`):** define and implement whether `w` is
   continuation probability or same-partner retention probability. The
   transition RNG, partner identity/state, prompt, and logged event must agree.
   A fixed-horizon episode with a printed `w` does not pass.
-- [ ] **Indirect reciprocity (`q`):** create a latent, seeded partner-reputation
+- [x] **Indirect reciprocity (`q`):** create a latent, seeded partner-reputation
   record and reveal it with probability `q`; log latent truth and visibility
   separately. A printed scalar or its use only inside HKB reward does not pass.
-- [ ] **Partner identity:** log an identity and maintain per-partner history.
+- [x] **Partner identity:** log an identity and maintain per-partner history.
   Implement forced TFT→AD and AD→TFT switches plus interleaved reciprocator/
   defector identities without leaking the policy name.
-- [ ] **Perturbations:** implement a forced accidental action at a specified
+- [x] **Perturbations:** implement a forced accidental action at a specified
   round, distinguishing intended from executed action, so recovery is
   measurable.
-- [ ] **Group/CFE:** implement the 4–5-agent group/public-goods episode needed
+- [x] **Group/CFE:** implement the 4–5-agent group/public-goods episode needed
   by Model D. Forecasts must target a precisely defined future group outcome;
   avoid scoring a vague running mean or leaking the target.
-- [ ] **Naturalistic stage:** implement label-randomized, verifier-only C/D
+- [x] **Naturalistic stage:** implement label-randomized, verifier-only C/D
   mappings for the stage-3 curriculum so transfer is not just memorization of
   the words “cooperate” and “defect.”
-- [ ] Log round-level agent/partner IDs, intended/executed actions, payoffs,
+- [x] Log round-level agent/partner IDs, intended/executed actions, payoffs,
   observations, reputation visibility, perturbations, forecast target, and
   reward components.
-- [ ] Separate training policies from held-out policies at the API/config
+- [x] Separate training policies from held-out policies at the API/config
   level, not by convention.
 
 Required semantic tests:
@@ -237,7 +237,9 @@ Required semantic tests:
 - invalid format terminates and cannot earn task reward;
 - all terminal paths retain a complete trace.
 
-**Evidence:** `PENDING`
+**Evidence:** `docs/GATE2_ENVIRONMENT_EVIDENCE.md`; 56-test full suite,
+36-test targeted semantic suite, preregistered `w/q` counterfactuals, and
+pinned PRIME/Verifiers adapter checks passed on 2026-07-20.
 
 ### Gate 3 — Build the reproducible evaluation/analysis pipeline
 
@@ -422,23 +424,18 @@ future/exploratory work.
 
 Do these in order:
 
-1. Allocate the same H100 topology as the pilot; discover/load CUDA and verify
-   `nvcc`/`CUDA_HOME`.
-2. Run one TP=2 Qwen generation to force the FlashInfer GDN compile.
-3. Run a new one-update smoke, then a new ten-update Model-A pilot; record the
-   Gate-0 evidence and measured budget.
-4. Write and review `docs/ANALYSIS_SPEC.md`.
-5. Write `docs/ENVIRONMENT_SPEC.md`, resolving the exact causal meanings of
-   `w`, `q`, reputation, identity, group forecast targets, and termination.
-6. Implement Gate-2 mechanics and semantic tests.
-7. Build the manifest/validation/analysis pipeline with synthetic known-answer
-   fixtures.
-8. Run the formal 500-episode base characterization and freeze the final sample
-   budget/curriculum decision.
-9. Freeze configs and run 50-update screens; repair only failures allowed by the
+1. Build the Gate-3 run wrapper, immutable manifest/status protocol, and
+   overwrite refusal.
+2. Build the trace validator and deterministic tidy analyzer.
+3. Implement every registered metric plus EMA/Brier/Murphy and Holm/nested
+   bootstrap logic against synthetic known-answer fixtures.
+4. Prove one-command, byte-identical synthetic table/figure regeneration.
+5. Only then allocate GPUs for the formal 500-episode base characterization;
+   validate its traces and freeze the final sample budget/curriculum decision.
+6. Freeze configs and run 50-update screens; repair only failures allowed by the
    frozen gate.
-10. Run final seeds, internal suites, transfer, registered analysis, and the
-    release gates without inserting Tier 2.
+7. Run final seeds, internal suites, transfer, registered analysis, and the
+   release gates without inserting Tier 2.
 
 ## 6. Known risks and stop decisions
 

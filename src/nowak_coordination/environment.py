@@ -1,17 +1,15 @@
-"""Verifiers v1 taskset and user simulator for iterated Donor's Game episodes."""
+"""Verifiers v1 adapter over the pure seeded coordination mechanics."""
 
 from __future__ import annotations
 
-import re
-import random
 from itertools import product
+from typing import Any, Literal
 
 from pydantic import Field
 import verifiers.v1 as vf
 
-from .game import Action, EpisodeConfig, RoundResult, donor_payoffs
-from .partners import make_partner
-from .rewards import model_reward
+from .game import Action, EpisodeConfig
+from .mechanics import make_world, parse_response, system_prompt
 
 
 SYSTEM_PROMPT = """You are playing an iterated Donor's Game.
@@ -19,109 +17,88 @@ Reply with exactly two lines and no other text:
 ACTION: COOPERATE or ACTION: DEFECT
 FORECAST_GROUP_COOP: a number from 0.00 to 1.00"""
 
-_RESPONSE = re.compile(
-    r"\A\s*ACTION:\s*(COOPERATE|DEFECT)\s*\n"
-    r"FORECAST_GROUP_COOP:\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*\Z",
-    re.IGNORECASE,
-)
 
+def initial_prompt(config: EpisodeConfig, reward_model: str = "A") -> str:
+    """Render the deterministic opening observation for task construction."""
 
-def round_prompt(config: EpisodeConfig, round_index: int, history: list[RoundResult]) -> str:
-    lines = [
-        f"Benefit to recipient: b = {config.b:g}.",
-        f"Cost to cooperator: c = {config.c:g}.",
-        f"Same-partner probability: w = {config.w:.2f}.",
-        f"Reputation visibility probability: q = {config.q:.2f}.",
-        "",
-        "History:",
-    ]
-    if history:
-        lines.extend(
-            f"Round {item.round_index}: you "
-            f"{'cooperated' if item.agent_action is Action.COOPERATE else 'defected'}, "
-            f"partner {'cooperated' if item.partner_action is Action.COOPERATE else 'defected'}."
-            for item in history
-        )
-    else:
-        lines.append("(none)")
-    lines.extend(("", f"Current round: {round_index}.", "Your output:"))
-    return "\n".join(lines)
+    return make_world(config, reward_model).render_prompt()
 
 
 class DonorState(vf.State):
+    """JSON-serializable scientific trace state."""
+
     game_over: bool = False
     invalid_output: bool = False
+    terminal_reason: str | None = None
+    trace_header: dict[str, Any] = Field(default_factory=dict)
+    rounds: list[dict[str, Any]] = Field(default_factory=list)
+    observations: list[dict[str, Any]] = Field(default_factory=list)
+    terminal_event: dict[str, Any] | None = None
+    # Compatibility columns retained for PRIME metrics and old engineering tools.
     agent_actions: list[int] = Field(default_factory=list)
     partner_actions: list[int] = Field(default_factory=list)
     agent_payoffs: list[float] = Field(default_factory=list)
     partner_payoffs: list[float] = Field(default_factory=list)
     forecasts: list[float] = Field(default_factory=list)
+    forecast_targets: list[float | None] = Field(default_factory=list)
 
 
 class DonorUser(vf.User[vf.UserConfig, DonorState]):
-    """Host-driven heuristic partner that advances one game round per model reply."""
+    """Host-driven simulator: one parsed model response advances one round."""
 
     async def setup_task(self, task: DonorData) -> None:
         self.episode = EpisodeConfig(**task.episode)
-        self.horizon = random.Random(self.episode.seed).randint(
-            self.episode.horizon_min, self.episode.horizon_max
-        )
-        self.rng = random.Random(self.episode.seed + 1)
-        kwargs: dict[str, object] = {}
-        if self.episode.partner_policy == "noisy_tit_for_tat":
-            kwargs["noise_rate"] = self.episode.noise_rate
-        self.partner = make_partner(self.episode.partner_policy, **kwargs)
+        self.reward_model = task.reward_model
+        self.world = make_world(self.episode, self.reward_model)
+        self.state.trace_header = self.world.trace_header()
+        self.state.observations = [observation.to_dict() for observation in self.world.observations]
 
-    def _history(self) -> list[RoundResult]:
-        return [
-            RoundResult(
-                round_index=index + 1,
-                agent_action=Action(agent),
-                partner_action=Action(partner),
-                agent_payoff=self.state.agent_payoffs[index],
-                partner_payoff=self.state.partner_payoffs[index],
-            )
-            for index, (agent, partner) in enumerate(
-                zip(self.state.agent_actions, self.state.partner_actions, strict=True)
-            )
-        ]
+    def _finish(self, reason: str) -> None:
+        self.state.game_over = True
+        self.state.terminal_reason = reason
+        self.state.terminal_event = {
+            "episode_id": self.episode.game_id,
+            "terminal_reason": reason,
+            "rounds_completed": len(self.state.rounds),
+            "expected_horizon": self.world.horizon,
+            "complete": True,
+            "label_mapping": {
+                label: ("C" if action is Action.COOPERATE else "D")
+                for action, label in self.world.labels.items()
+            },
+        }
 
     async def respond(self, message: str) -> vf.Messages:
-        # A task with a simulator opens through ``respond(\"\")``.  Keeping the
-        # initial round here (rather than in TaskData.prompt) ensures the null
-        # harness always receives a user turn before it calls Qwen's template.
         if message == "":
-            return [{"role": "user", "content": round_prompt(self.episode, 1, [])}]
+            return [{"role": "user", "content": self.world.render_prompt()}]
 
-        match = _RESPONSE.fullmatch(message)
-        if match is None:
+        try:
+            action, forecast = parse_response(message, self.episode, self.world.labels)
+        except ValueError:
             self.state.invalid_output = True
-            self.state.game_over = True
+            self._finish("invalid_format")
             return [{"role": "user", "content": "Episode ended: invalid output format."}]
 
-        action = Action[match.group(1).upper()]
-        forecast = float(match.group(2))
-        history = self._history()
-        partner_action = self.partner.act(history, self.rng)
-        agent_payoff, partner_payoff = donor_payoffs(
-            action, partner_action, self.episode.b, self.episode.c
+        result = self.world.step(action, forecast)
+        event = result.event
+        self.state.rounds.append(event)
+        self.state.agent_actions.append(
+            int(Action.COOPERATE if event["focal_executed_action"] == "C" else Action.DEFECT)
         )
-        self.state.agent_actions.append(int(action))
-        self.state.partner_actions.append(int(partner_action))
-        self.state.agent_payoffs.append(agent_payoff)
-        self.state.partner_payoffs.append(partner_payoff)
-        self.state.forecasts.append(forecast)
+        first_partner_action = event["partner_executed_actions"][0]
+        self.state.partner_actions.append(
+            int(Action.COOPERATE if first_partner_action == "C" else Action.DEFECT)
+        )
+        self.state.agent_payoffs.append(float(event["focal_payoff"]))
+        self.state.partner_payoffs.append(float(event["partner_payoffs"][0]))
+        self.state.forecasts.append(float(event["forecast"]))
+        self.state.forecast_targets.append(event["forecast_target"])
+        self.state.observations = [observation.to_dict() for observation in self.world.observations]
 
-        history = self._history()
-        if len(history) >= self.horizon:
-            self.state.game_over = True
+        if result.done:
+            self._finish("horizon")
             return [{"role": "user", "content": "Episode complete."}]
-        return [
-            {
-                "role": "user",
-                "content": round_prompt(self.episode, len(history) + 1, history),
-            }
-        ]
+        return [{"role": "user", "content": self.world.render_prompt()}]
 
 
 class DonorTaskConfig(vf.TaskConfig):
@@ -130,26 +107,12 @@ class DonorTaskConfig(vf.TaskConfig):
 
 
 class DonorData(vf.TaskData):
-    episode: dict
+    episode: dict[str, Any]
+    reward_model: str = "A"
 
 
 class DonorTask(vf.Task[DonorData, DonorState, DonorTaskConfig]):
     user = DonorUser
-
-    def _history(self, trace: vf.Trace) -> list[RoundResult]:
-        state = trace.state
-        return [
-            RoundResult(
-                index + 1,
-                Action(agent),
-                Action(partner),
-                state.agent_payoffs[index],
-                state.partner_payoffs[index],
-            )
-            for index, (agent, partner) in enumerate(
-                zip(state.agent_actions, state.partner_actions, strict=True)
-            )
-        ]
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
@@ -157,52 +120,61 @@ class DonorTask(vf.Task[DonorData, DonorState, DonorTaskConfig]):
 
     @vf.reward
     async def episode_reward(self, trace: vf.Trace) -> float:
-        if trace.state.invalid_output or not trace.state.agent_actions:
+        if trace.state.invalid_output or not trace.state.rounds:
             return 0.0
-        config = EpisodeConfig(**self.data.episode)
-        history = self._history(trace)
-        rewards = []
-        for index in range(len(history)):
-            prefix = history[: index + 1]
-            partner_cooperation = sum(
-                item.partner_action is Action.COOPERATE for item in prefix
-            ) / len(prefix)
-            rewards.append(
-                model_reward(
-                    self.config.model,
-                    prefix,
-                    b=config.b,
-                    c=config.c,
-                    q=config.q,
-                    forecast=trace.state.forecasts[index],
-                    realized_group_cooperation=partner_cooperation,
-                ).total
-            )
-        return sum(rewards) / len(rewards)
+        return sum(float(item["reward"]["total"]) for item in trace.state.rounds) / len(
+            trace.state.rounds
+        )
 
     @vf.metric
     async def cooperation_rate(self, trace: vf.Trace) -> float:
-        actions = trace.state.agent_actions
-        return sum(action == int(Action.COOPERATE) for action in actions) / max(len(actions), 1)
+        rounds = trace.state.rounds
+        return sum(item["focal_executed_action"] == "C" for item in rounds) / max(len(rounds), 1)
 
     @vf.metric
     async def format_valid(self, trace: vf.Trace) -> float:
         return float(not trace.state.invalid_output)
 
     @vf.metric
+    async def trace_complete(self, trace: vf.Trace) -> float:
+        terminal = trace.state.terminal_event
+        return float(
+            terminal is not None
+            and terminal.get("complete") is True
+            and trace.state.terminal_reason in {"horizon", "invalid_format"}
+        )
+
+    @vf.metric
     async def outcome_rates(self, trace: vf.Trace) -> dict[str, float]:
-        history = self._history(trace)
-        denominator = max(len(history), 1)
+        outcomes = [outcome for item in trace.state.rounds for outcome in item["joint_outcomes"]]
+        denominator = max(len(outcomes), 1)
         return {
-            f"p_{outcome.lower()}": sum(item.joint_action == outcome for item in history)
-            / denominator
+            f"p_{outcome.lower()}": sum(item == outcome for item in outcomes) / denominator
             for outcome in ("CC", "CD", "DC", "DD")
         }
 
     @vf.metric
     async def mean_agent_payoff(self, trace: vf.Trace) -> float:
-        payoffs = trace.state.agent_payoffs
+        payoffs = [float(item["focal_payoff"]) for item in trace.state.rounds]
         return sum(payoffs) / max(len(payoffs), 1)
+
+    @vf.metric
+    async def mean_reward_components(self, trace: vf.Trace) -> dict[str, float]:
+        rounds = trace.state.rounds
+        if not rounds:
+            return {"mean_payoff_reward": 0.0, "mean_hkb_reward": 0.0, "mean_cfe_reward": 0.0}
+
+        def mean_component(name: str) -> float:
+            values = [
+                float(item["reward"][name]) for item in rounds if item["reward"][name] is not None
+            ]
+            return sum(values) / len(values) if values else 0.0
+
+        return {
+            "mean_payoff_reward": mean_component("payoff"),
+            "mean_hkb_reward": mean_component("hkb"),
+            "mean_cfe_reward": mean_component("calibration"),
+        }
 
 
 class DonorTasksetConfig(vf.TasksetConfig):
@@ -216,6 +188,16 @@ class DonorTasksetConfig(vf.TasksetConfig):
     horizon_max: int = Field(default=12, ge=1)
     partner_policy: str = "noisy_tit_for_tat"
     noise_rate: float = Field(default=0.05, ge=0, le=1)
+    mode: Literal["dyadic", "naturalistic", "group"] = "dyadic"
+    policy_split: Literal["training", "heldout", "diagnostic"] = "training"
+    replacement_policies: list[str] = Field(default_factory=list)
+    partner_switch_round: int | None = None
+    switch_to_policy: str | None = None
+    interleaved_policies: list[str] = Field(default_factory=list)
+    perturbation_round: int | None = None
+    perturbation_actor: Literal["focal", "partner"] | None = None
+    group_size: int = Field(default=4, ge=4, le=5)
+    reputation_length: int = Field(default=4, ge=1)
     b_values: list[float] = Field(default_factory=list)
     w_values: list[float] = Field(default_factory=list)
     q_values: list[float] = Field(default_factory=list)
@@ -225,6 +207,44 @@ class DonorTasksetConfig(vf.TasksetConfig):
 
 
 class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
+    def _episode(
+        self,
+        *,
+        index: int,
+        b: float,
+        w: float,
+        q: float,
+        partner_policy: str,
+        replicate: int,
+    ) -> EpisodeConfig:
+        return EpisodeConfig(
+            game_id=(
+                f"{self.config.mode}_b{b:g}_w{w:.2f}_q{q:.2f}_{partner_policy}_r{replicate:02d}"
+            ),
+            b=b,
+            c=self.config.c,
+            w=w,
+            q=q,
+            horizon_min=self.config.horizon_min,
+            horizon_max=self.config.horizon_max,
+            partner_policy=partner_policy,
+            noise_rate=self.config.noise_rate,
+            mode=self.config.mode,
+            policy_split=self.config.policy_split,
+            replacement_policies=tuple(self.config.replacement_policies),
+            partner_switch_round=self.config.partner_switch_round,
+            switch_to_policy=self.config.switch_to_policy,
+            interleaved_policies=tuple(self.config.interleaved_policies),
+            perturbation_round=self.config.perturbation_round,
+            perturbation_actor=self.config.perturbation_actor,
+            group_size=self.config.group_size,
+            reputation_length=self.config.reputation_length,
+            naturalistic_label_flip=(index % 2 == 1)
+            if self.config.mode == "naturalistic"
+            else None,
+            seed=self.config.seed + index,
+        )
+
     def load(self) -> list[DonorTask]:
         cells = list(
             product(
@@ -253,39 +273,28 @@ class DonorTaskset(vf.Taskset[DonorTask, DonorTasksetConfig]):
                 )
                 for index in range(self.config.num_tasks)
             ]
-        tasks = []
+        tasks: list[DonorTask] = []
         for index, (b, w, q, partner_policy, replicate) in enumerate(cells):
-            episode = EpisodeConfig(
-                game_id=(f"donor_b{b:g}_w{w:.2f}_q{q:.2f}_{partner_policy}_r{replicate:02d}"),
+            episode = self._episode(
+                index=index,
                 b=b,
-                c=self.config.c,
                 w=w,
                 q=q,
-                horizon_min=self.config.horizon_min,
-                horizon_max=self.config.horizon_max,
                 partner_policy=partner_policy,
-                noise_rate=self.config.noise_rate,
-                seed=self.config.seed + index,
+                replicate=replicate,
             )
+            world = make_world(episode, self.config.task.model)
             tasks.append(
                 DonorTask(
                     DonorData(
                         idx=index,
                         name=episode.game_id,
-                        # Send the opening turn as a structured message.  The null harness
-                        # forwards this verbatim via its initial-messages file, which avoids
-                        # relying on its simulator-opening path before Qwen sees its first
-                        # user query.  Subsequent turns still come from ``DonorUser``.
-                        prompt=[
-                            {
-                                "role": "user",
-                                "content": round_prompt(episode, 1, []),
-                            }
-                        ],
-                        system_prompt=SYSTEM_PROMPT,
+                        prompt=[{"role": "user", "content": world.render_prompt()}],
+                        system_prompt=system_prompt(episode, world.labels),
                         episode={
                             field: getattr(episode, field) for field in episode.__dataclass_fields__
                         },
+                        reward_model=self.config.task.model,
                     ),
                     self.config.task,
                 )

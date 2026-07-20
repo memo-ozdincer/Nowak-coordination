@@ -11,6 +11,7 @@ from nowak_coordination.rewards import (
     hkb_reward,
     model_reward,
     payoff_reward,
+    ShuffledHKBReference,
 )
 
 
@@ -68,8 +69,26 @@ def test_models_a_to_d_ablation_composition():
     history = [result(1, Action.COOPERATE, Action.COOPERATE, payoff=3)]
     a = model_reward("A", history, b=4, c=1, q=0.8)
     b = model_reward("B", history, b=4, c=1, q=0.8)
-    c = model_reward("C", history, b=4, c=1, q=0.8, forecast=0.5, realized_group_cooperation=1)
-    d = model_reward("D", history, b=4, c=1, q=0.8, forecast=0.5, realized_group_cooperation=1)
+    c = model_reward(
+        "C",
+        history,
+        b=4,
+        c=1,
+        q=0.8,
+        forecast=0.5,
+        realized_group_cooperation=1,
+        calibration_applicable=True,
+    )
+    d = model_reward(
+        "D",
+        history,
+        b=4,
+        c=1,
+        q=0.8,
+        forecast=0.5,
+        realized_group_cooperation=1,
+        calibration_applicable=True,
+    )
     assert a.total == pytest.approx(0.8)
     assert b.total == pytest.approx(a.total + 0.15)
     assert c.total == pytest.approx(a.total - 0.05 * 0.25)
@@ -78,5 +97,38 @@ def test_models_a_to_d_ablation_composition():
 
 def test_forecast_models_require_forecast_inputs():
     history = [result(1, Action.DEFECT, Action.DEFECT)]
-    with pytest.raises(ValueError, match="requires forecast"):
-        model_reward("D", history, b=4, c=1, q=0.8)
+    with pytest.raises(ValueError, match="requires a group forecast target"):
+        model_reward("D", history, b=4, c=1, q=0.8, calibration_applicable=True)
+
+
+def test_model_e_uses_only_mismatched_reference():
+    focal = [result(1, Action.COOPERATE, Action.DEFECT, payoff=-1)]
+    reference = ShuffledHKBReference(
+        episode_id="other-episode",
+        partner_id="other-partner",
+        history=(result(1, Action.COOPERATE, Action.COOPERATE),),
+    )
+    reward = model_reward(
+        "E",
+        focal,
+        b=4,
+        c=1,
+        q=0.8,
+        shuffled_reference=reference,
+        focal_episode_id="focal",
+        focal_partner_id="focal-partner",
+    )
+    assert reward.payoff == pytest.approx(0)
+    assert reward.hkb == pytest.approx(1)
+    assert reward.total == pytest.approx(0.15)
+    with pytest.raises(ValueError, match="focal episode"):
+        model_reward(
+            "E",
+            focal,
+            b=4,
+            c=1,
+            q=0.8,
+            shuffled_reference=ShuffledHKBReference("focal", "other-partner", reference.history),
+            focal_episode_id="focal",
+            focal_partner_id="focal-partner",
+        )

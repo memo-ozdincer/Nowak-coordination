@@ -62,6 +62,20 @@ def test_episode_validation():
         config(q=1.1)
     with pytest.raises(ValueError, match="horizon"):
         config(horizon_min=3, horizon_max=2)
+    with pytest.raises(ValueError, match="every possible horizon"):
+        config(
+            horizon_min=3,
+            horizon_max=8,
+            partner_switch_round=6,
+            switch_to_policy="always_defect",
+        )
+    with pytest.raises(ValueError, match="every possible horizon"):
+        config(
+            horizon_min=3,
+            horizon_max=8,
+            perturbation_round=5,
+            perturbation_actor="focal",
+        )
 
 
 def test_empty_and_nonempty_cooperation_rate():

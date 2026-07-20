@@ -75,6 +75,15 @@ class RewardBreakdown:
     total: float
 
 
+@dataclass(frozen=True, slots=True)
+class ShuffledHKBReference:
+    """HKB history from an explicitly different episode and partner."""
+
+    episode_id: str
+    partner_id: str
+    history: tuple[RoundResult, ...]
+
+
 def model_reward(
     model: str,
     history: Sequence[RoundResult],
@@ -84,23 +93,43 @@ def model_reward(
     q: float,
     forecast: float | None = None,
     realized_group_cooperation: float | None = None,
+    calibration_applicable: bool = False,
+    hkb_histories: Sequence[Sequence[RoundResult]] | None = None,
+    shuffled_reference: ShuffledHKBReference | None = None,
+    focal_episode_id: str | None = None,
+    focal_partner_id: str | None = None,
     hkb_weight: float = 0.15,
     calibration_weight: float = 0.05,
 ) -> RewardBreakdown:
-    """Compute one of the four planned ablation rewards from the latest round."""
+    """Compute a preregistered ablation reward for one completed round."""
 
     model = model.upper()
-    if model not in {"A", "B", "C", "D"}:
-        raise ValueError("model must be one of A, B, C, D")
+    if model not in {"A", "B", "C", "D", "E"}:
+        raise ValueError("model must be one of A, B, C, D, E")
     if not history:
         raise ValueError("reward requires at least one completed round")
 
     payoff = payoff_reward(history[-1].agent_payoff, b, c)
-    hkb = hkb_reward(history, q, b, c) if model in {"B", "D"} else None
+    hkb = None
+    if model in {"B", "D"}:
+        histories = list(hkb_histories) if hkb_histories is not None else [history]
+        if not histories or any(not item for item in histories):
+            raise ValueError("HKB histories must be non-empty")
+        hkb = sum(hkb_reward(item, q, b, c) for item in histories) / len(histories)
+    elif model == "E":
+        if shuffled_reference is None:
+            raise ValueError("Model E requires a shuffled HKB reference")
+        if not shuffled_reference.history:
+            raise ValueError("shuffled HKB history must be non-empty")
+        if shuffled_reference.episode_id == focal_episode_id:
+            raise ValueError("shuffled HKB cannot use the focal episode")
+        if shuffled_reference.partner_id == focal_partner_id:
+            raise ValueError("shuffled HKB cannot use the focal partner")
+        hkb = hkb_reward(shuffled_reference.history, q, b, c)
     calibration = None
-    if model in {"C", "D"}:
+    if model in {"C", "D"} and calibration_applicable:
         if forecast is None or realized_group_cooperation is None:
-            raise ValueError(f"Model {model} requires forecast and realized cooperation")
+            raise ValueError(f"Model {model} requires a group forecast target")
         calibration = forecast_calibration_reward(forecast, realized_group_cooperation)
 
     total = payoff

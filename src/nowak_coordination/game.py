@@ -1,11 +1,11 @@
-"""Core iterated Donor's Game types and transition logic."""
+"""Core types and payoff logic shared by the seeded environments."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
 import random
-from typing import Iterable
+from typing import Iterable, Literal
 
 
 class Action(IntEnum):
@@ -36,8 +36,17 @@ class EpisodeConfig:
     horizon_max: int = 12
     partner_policy: str = "tit_for_tat"
     noise_rate: float = 0.0
-    reputation_visible: bool = True
+    mode: Literal["dyadic", "naturalistic", "group"] = "dyadic"
+    policy_split: Literal["training", "heldout", "diagnostic"] = "training"
+    replacement_policies: tuple[str, ...] = ()
     partner_switch_round: int | None = None
+    switch_to_policy: str | None = None
+    interleaved_policies: tuple[str, ...] = ()
+    perturbation_round: int | None = None
+    perturbation_actor: Literal["focal", "partner"] | None = None
+    group_size: int = 4
+    reputation_length: int = 4
+    naturalistic_label_flip: bool | None = None
     seed: int = 0
 
     def __post_init__(self) -> None:
@@ -50,8 +59,33 @@ class EpisodeConfig:
                 raise ValueError(f"{name} must be in [0, 1]")
         if self.horizon_min < 1 or self.horizon_max < self.horizon_min:
             raise ValueError("invalid horizon bounds")
-        if self.partner_switch_round is not None and self.partner_switch_round < 1:
-            raise ValueError("partner_switch_round must be positive")
+        if self.partner_switch_round is not None:
+            if self.partner_switch_round < 2:
+                raise ValueError("partner_switch_round must be at least 2")
+            if self.partner_switch_round > self.horizon_min:
+                raise ValueError("partner_switch_round must occur in every possible horizon")
+            if self.switch_to_policy is None:
+                raise ValueError("partner_switch_round requires switch_to_policy")
+        elif self.switch_to_policy is not None:
+            raise ValueError("switch_to_policy requires partner_switch_round")
+        if self.interleaved_policies and len(self.interleaved_policies) != 2:
+            raise ValueError("interleaved_policies must contain exactly two policies")
+        if self.interleaved_policies and self.partner_switch_round is not None:
+            raise ValueError("interleaving and forced switching are mutually exclusive")
+        if self.perturbation_round is not None:
+            if not 1 <= self.perturbation_round <= self.horizon_min:
+                raise ValueError("perturbation_round must occur in every possible horizon")
+            if self.perturbation_actor is None:
+                raise ValueError("perturbation_round requires perturbation_actor")
+        elif self.perturbation_actor is not None:
+            raise ValueError("perturbation_actor requires perturbation_round")
+        if self.mode == "group":
+            if not 4 <= self.group_size <= 5:
+                raise ValueError("group_size must be 4 or 5")
+            if self.partner_switch_round is not None or self.interleaved_policies:
+                raise ValueError("group episodes do not use dyadic switch/interleaving")
+        if self.reputation_length < 1:
+            raise ValueError("reputation_length must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +95,9 @@ class RoundResult:
     partner_action: Action
     agent_payoff: float
     partner_payoff: float
+    agent_intended_action: Action | None = None
+    partner_intended_action: Action | None = None
+    partner_id: str | None = None
 
     @property
     def joint_action(self) -> str:

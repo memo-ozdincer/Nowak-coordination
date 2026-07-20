@@ -160,21 +160,26 @@ name matches taskset ID `donor-coord-v1` and exports exactly one `Taskset` via
 `src/nowak_coordination/environment.py`.
 
 - `DonorTaskset.load()` expands the `(b, w, q, partner policy, replicate)` grid
-  into deterministic typed tasks.
+  into deterministic typed tasks and validates the training/held-out/diagnostic
+  policy registry before a rollout can start.
 - Round 1 is an explicit structured `user` message in `TaskData.prompt`.
   This avoids depending on simulator-opening behavior. `DonorUser` supplies
   subsequent turns.
 - `DonorUser` is colocated with the null harness. Per-rollout mutable data
-  belongs in `DonorState`; seeded RNGs make horizons and partner behavior
-  reproducible.
-- The simulator parses the model's exact two-line protocol, advances the game,
-  writes actions/payoffs/forecasts to state, and sets `game_over`. Invalid
-  output terminates the episode and receives zero reward.
+  belongs in `DonorState`; `mechanics.py` derives independent named RNG streams
+  for horizon, retention, selection, visibility, reputation, partner actions,
+  HKB controls, and naturalistic labels.
+- The simulator parses the model's exact two-line protocol, advances dyadic,
+  naturalistic, or group mechanics, and logs the complete structured round:
+  opaque IDs, intended/executed actions, observations, transition draws,
+  payoffs, forecast target, and A–E reward components. Invalid output terminates
+  with zero reward and a complete terminal event.
 - `@vf.stop` ends the interaction from shared state. `@vf.reward` and
   `@vf.metric` score the completed trace. Do not keep rollout state on the
   shared `Task` instance.
-- Unit-test task expansion, prompts, simulator transitions, termination,
-  reward components, and seeded partner behavior before loading a model.
+- Run `./.venv/bin/python -m pytest -q` before loading a model. Gate-2 evidence
+  and audited hashes are in `docs/GATE2_ENVIRONMENT_EVIDENCE.md`; changes to a
+  hashed mechanics file require rerunning that acceptance suite.
 
 For another environment, add an importable discovery package, install the
 project editable into the PRIME venv, add a `[[orchestrator.train.env]]` entry,
