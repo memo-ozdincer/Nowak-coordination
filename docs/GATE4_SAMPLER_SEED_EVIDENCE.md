@@ -1,7 +1,7 @@
 # Gate 4 sampler-seed and launch-path evidence
 
-**Status:** engineering prerequisite passed; formal 500-episode cohort not
-started.
+**Status:** historical pre-launch engineering prerequisite passed; the later
+formal 500-episode cohort also passed.
 
 ## Why metadata alone was rejected
 
@@ -62,6 +62,9 @@ terminal state are retained in each run manifest.
 
 ## Gate decision
 
-The sampler-seed injection prerequisite is passed. Launch authorization still
-depends on the independent audit and frozen hash of Analysis Spec v1.4 plus
-the exact Gate-4 registry tests. No formal validation trace has been generated.
+The sampler-seed injection prerequisite passed before launch. The later formal
+cohort passed exact registry validation with 500 traces and 5,000 rounds.
+Formal paths, trace hashes, failures, results, and decisions are recorded in
+`docs/GATE4_BASE_CHARACTERIZATION_EVIDENCE.md`. This document remains the
+historical evidence for the seed-transport prerequisite rather than a current
+project-status report.

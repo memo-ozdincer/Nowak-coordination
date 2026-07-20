@@ -31,6 +31,7 @@ from nowak_coordination.trace_analysis import (
     episode_metrics,
     holm_adjust,
     load_jsonl,
+    round_rows,
     validate_gate4_cohort,
     validate_records,
 )
@@ -40,16 +41,16 @@ PROJECT = Path(__file__).parents[1]
 FIXTURE = PROJECT / "analysis/fixtures/synthetic_traces.jsonl"
 TABLE_SNAPSHOTS = {
     "aggregates.csv": "acd55d828f62faaa728a5052902b574cf015c349301b25a390e6f97136451a7d",
-    "analysis_manifest.json": "ea2b20d8a71875c219378fff1b093a5681b53835aa92dce7ef859deced2b0c69",
+    "analysis_manifest.json": "22e530dade3b84a4bd80cc59d111ab10ee60e19019e595f431b02bdec5441e35",
     "bootstrap.csv": "f5b966f5d483451e79ab989c1e76421c136257ae7d3af513008a2abd6dfa889c",
     "confirmatory.csv": "75c6564bfdef348d890da6bd3b267e311ac766fd5ad425a36ddef0dc6653577b",
     "confirmatory_decision.json": "3a5ad2f4a5f7f9fd99cc5134d104ae81e000646eb5a060c1b1bd9b7d96bddc9b",
     "diagnostic_cells.csv": "c593d0ed32aed8024fc64179e9704847db3d671bcb91de8df0e5a2fa9884dc62",
     "episodes.csv": "0565ea60eac7c51da51b49d0f4a441799e6001b8f41341d1560a8c72e30af956",
-    "forecast_skill.csv": "c355c396a5cf0468fd17145c3e2339f5906e76cfcdb7d07b2924450f9acfb7da",
+    "forecast_skill.csv": "38ae3ff10be0acd2111c3772c13a23101c3ccabf44d997fce6c5db889231eb78",
     "gate4_sensitivity.csv": "081044237021c0c30803f67f3dea507115553ea24c010d8e6593a1b0e4c0f2f7",
     "hkb_stress.csv": "baa7474a251ca7e968b006671fa886dc8c58b0505479147dfc32e792c996c1f5",
-    "rounds.csv": "d7f96cd15095ff16c1ee57c1c0685063a0ab1da3040d651444621c47f284f839",
+    "rounds.csv": "1cfa54199d1a18d86fe6bff7d57c4755ff11c8e8dd13cdfc0186e5a1095a4cd1",
     "sensitivities.csv": "fbc90ae0f4a6429988249dd85df5fb2e2e02e42cf382e2328419e541d626021a",
     "validation.json": "75d87529c646a42916ac35950ec99433a8e36b96c7978af11ccbe32357247201",
 }
@@ -307,6 +308,22 @@ def test_forecast_decomposition_expands_fractional_group_observations() -> None:
         }
     )
     assert holm_adjust([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
+
+
+def test_round_table_uses_full_group_size_for_fractional_target() -> None:
+    record = next(
+        record
+        for record in load_jsonl(FIXTURE)
+        if any(
+            event["forecast_target"] is not None
+            for event in record["info"]["coordination_trace"]["rounds"]
+        )
+    )
+    rows = round_rows(record, AnalysisConfig(ema_initial=0.5))
+    events = record["info"]["coordination_trace"]["rounds"]
+    for row, event in zip(rows, events, strict=True):
+        if event["forecast_target"] is not None:
+            assert row["group_size"] == len(event["partner_executed_actions"]) + 1
 
 
 def test_analyzer_is_byte_deterministic_and_emits_every_table(tmp_path: Path) -> None:

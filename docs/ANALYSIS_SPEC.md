@@ -1,7 +1,7 @@
-# Analysis specification v1.4
+# Analysis specification v1.5
 
-**Status:** Gate-4 amendment frozen before scientific evaluation; independent
-re-audit passed 2026-07-20.
+**Status:** post-Gate-4 budget amendment frozen before trained-model
+evaluation; independent re-audit passed 2026-07-20.
 
 This is the confirmatory analysis contract for Tier 1.  It applies only after
 the Gate-2 semantic tests and Gate-3 analysis fixtures pass.  No confirmatory
@@ -132,8 +132,15 @@ the recovery claim but cannot rescue a failed primary decision.
 ## Evaluation designs and selection
 
 The Nowak grid uses `b/c={2,3,5,8}`, `w/q={.1,.3,.5,.7,.9}`, five partner
-cells, and 100 episodes per cell total: 20 per test seed.  This explicit
-total-per-cell allocation resolves the ambiguity in the broader plan.
+cells, and 20 episodes per cell total: four per test seed. This is 10,000
+diagnostic episodes per checkpoint. Cell-level values are descriptive; the
+registered sensitivity and model comparisons aggregate over cells and use the
+independent training run as the inference unit. Gate 4 measured approximately
+2.1 wall seconds per ten-round episode on two H100s, so the earlier
+50,000-episode-per-checkpoint target would cost roughly 29 hours per checkpoint
+without creating new independent training replications. The revised budget
+preserves every parameter/partner cell and every test stream while avoiding
+pseudo-precision in a non-confirmatory grid.
 The repeated-2x2 suite uses six families, ten rounds, hidden randomized action
 labels, held-out payoff matrices, and 100 games/family balanced across test
 seeds.  The Battle-of-the-Sexes slice is the primary transfer outcome.
@@ -194,3 +201,10 @@ confirmatory parameter-sensitivity estimand above and cannot support a trained
 model claim. It does not change either confirmatory efficacy hypothesis,
 safety margin, test seed, or required confirmatory cohort. Its independent
 re-audit and frozen hash must be recorded before the Gate-4 launch.
+
+Version 1.5 uses the completed validation-only Gate-4 characterization to
+reduce only the broad Nowak diagnostic from 100 to 20 episodes per cell. The
+confirmatory recovery and exploitability suites remain 100 episodes per
+checkpoint, all five test streams remain fixed, and the five independent
+A/B/E training runs and exact run-level permutation are unchanged. No trained
+checkpoint or confirmatory test result existed when this amendment was made.

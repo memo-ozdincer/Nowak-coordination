@@ -328,29 +328,44 @@ mechanics and formal metrics. Before the formal base run, prove that the
 launcher injects the requested sampler seed and records the effective engine
 seed; trace provenance alone is not proof.
 
-- [ ] Run a 500-episode stratified base characterization spanning all
+- [x] Run a 500-episode stratified base characterization spanning all
   `b/c={2,3,5,8}`, `w/q={.1,.3,.5,.7,.9}`, adaptive and non-adaptive partners,
   held-out partners, switches/noise, and five evaluation seeds.
-- [ ] Verify trace integrity and generate the preregistered table without
+- [x] Verify trace integrity and generate the preregistered table without
   manually editing results.
-- [ ] Record action/forecast entropy, format validity, parameter sensitivity,
+- [x] Record action/forecast entropy, format validity, parameter sensitivity,
   outcome decomposition, exploitability, and group reward variance.
-- [ ] Make the curriculum decision before training:
+- [x] Make the curriculum decision before training:
   if base behavior is unconditional, preserve the full parameter curriculum;
   if it already tracks parameters, increase partner/adaptation difficulty and
   treat A as a sufficiency test. Record the decision without changing test
   metrics.
-- [ ] Use observed variance and Gate-0 throughput to freeze the confirmatory
-  sample budget. The target full Nowak grid is 500 cells
-  (4 ratios × 5 `w` × 5 `q` × 5 partners), 100 episodes per cell total,
-  balanced across five evaluation seeds. If precision/cost forces a smaller
-  design, revise and version the analysis spec before trained results exist.
+- [x] Independently audit and freeze the v1.5 budget amendment derived from
+  observed variance and Gate-0/Gate-4 throughput. The confirmatory recovery
+  and exploitability budgets remain 100 episodes per checkpoint. The broad
+  Nowak diagnostic is revised to 20 episodes per cell total, four per test
+  stream. This preserves all 500 cells
+  (4 ratios × 5 `w` × 5 `q` × 5 partners) and all five test streams at
+  10,000 diagnostic episodes per checkpoint.
+
+Analysis Spec v1.5 SHA-256:
+`4d92f08f182d83c19008846c75fa08a09a1c1eddd0494ab9b577dfdc9087b08a`.
+Independent audit passed after confirming that only the non-confirmatory grid
+budget changed and that confirmatory suites, test streams, training-run units,
+and exact permutation are unchanged.
+
+**Decision:** the base model does not pass the practical parameter-signal rule
+(`b/c β=+0.0045`; `w β=-0.0397`) and is exploitable despite perfect format
+validity. Preserve the complete parameter curriculum and emphasize adaptation,
+defector discrimination, and non-exploitability. Do not add seeds to optimize
+a Gate-4 p-value.
 
 **Evidence:** current engineering sample is
 `results/base_grid/traces.jsonl`; sampler transport and live probe:
 `docs/GATE4_SAMPLER_SEED_EVIDENCE.md`; frozen registry and decision rule:
-`docs/GATE4_BASE_CHARACTERIZATION_SPEC.md`; formal 500-trace evidence
-`PENDING`
+`docs/GATE4_BASE_CHARACTERIZATION_SPEC.md`; formal 500-trace results and
+decisions: `docs/GATE4_BASE_CHARACTERIZATION_EVIDENCE.md`;
+`results/gate4/base_characterization_cohort/20260720T150000Z-7034325`
 
 ### Gate 5 — Freeze training and prove learning signal quality
 
