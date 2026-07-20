@@ -38,9 +38,10 @@ def main() -> None:
     args = parser.parse_args()
 
     project = args.project.resolve()
-    runtime_python = args.runtime_python.resolve()
+    # Do not resolve interpreter symlinks: doing so strips virtualenv context.
+    runtime_python = args.runtime_python.absolute()
     analysis_python = (
-        args.analysis_python.resolve()
+        args.analysis_python.absolute()
         if args.analysis_python
         else project / ".venv/bin/python"
     )

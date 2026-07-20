@@ -225,7 +225,9 @@ def create_run(
             else None,
         },
         "versions": package_versions(runtime_python),
-        "runtime_python": str(runtime_python.resolve()) if runtime_python else None,
+        # Preserve a virtualenv interpreter path instead of resolving its symlink
+        # to the base Python executable.
+        "runtime_python": str(runtime_python.absolute()) if runtime_python else None,
         "hardware": hardware_snapshot(),
         "seeds": {
             "role": seed_role,
